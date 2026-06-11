@@ -1,0 +1,9 @@
+# YOLO training dataset config — update paths after labeling.
+path: data/dataset
+train: images/train
+val: images/val
+
+names:
+  0: brailer_loaded
+  1: brailer_empty
+  2: reference

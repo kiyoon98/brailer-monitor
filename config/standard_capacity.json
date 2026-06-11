@@ -1,0 +1,7 @@
+{
+  "standard_capacity_kg": 1500.0,
+  "confidence_weight_std": 0.4,
+  "confidence_weight_geom": 0.6,
+  "min_detection_confidence": 0.35,
+  "review_confidence_threshold": 0.65
+}

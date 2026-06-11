@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brailer-monitor"
+version = "0.1.0"
+description = "Brailer detection and catch volume estimation from EM video"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ultralytics>=8.3.0",
+    "supervision>=0.25.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+opencv = ["opencv-python-headless>=4.8.0"]
+
+[project.scripts]
+brailer-monitor = "brailer_monitor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["brailer_monitor*"]
+
+[tool.setuptools.package-data]
+brailer_monitor = ["py.typed"]

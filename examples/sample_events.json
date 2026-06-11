@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp": "PT00H03M12.500S",
+    "camera_id": "cam-brailer-demo",
+    "track_id": "trk-0007",
+    "event_type": "brailer_transfer",
+    "fill_ratio": 0.82,
+    "volume_m3": 1.45,
+    "weight_kg_geom": 801.2,
+    "weight_kg_std": 1500.0,
+    "weight_kg_est": 1080.7,
+    "confidence": 0.78,
+    "video_clip_ref": "transfer_20260310.mp4",
+    "review_status": "accepted"
+  },
+  {
+    "timestamp": "PT00H05M44.000S",
+    "camera_id": "cam-brailer-demo",
+    "track_id": "trk-0012",
+    "event_type": "brailer_transfer",
+    "fill_ratio": 0.65,
+    "volume_m3": 1.1,
+    "weight_kg_geom": 608.4,
+    "weight_kg_std": 1500.0,
+    "weight_kg_est": 965.0,
+    "confidence": 0.58,
+    "video_clip_ref": "transfer_20260310.mp4",
+    "review_status": "pending"
+  }
+]

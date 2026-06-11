@@ -1,0 +1,22 @@
+{
+  "camera_id": "cam-brailer-01",
+  "cm_per_pixel": 2.5,
+  "roi_name": "transfer_zone",
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "bulk_density_kg_per_m3": 650.0,
+  "packing_factor": 0.85,
+  "brailer_diameter_cm": 250.0,
+  "transfer_zone": {
+    "polygon": [
+      [200, 100],
+      [1700, 100],
+      [1700, 900],
+      [200, 900]
+    ]
+  },
+  "unload_line": {
+    "start": [960, 100],
+    "end": [960, 900]
+  }
+}
