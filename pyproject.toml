@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 opencv = ["opencv-python-headless>=4.8.0"]
+web = ["fastapi>=0.115.0", "uvicorn[standard]>=0.32.0", "python-multipart>=0.0.12"]
 
 [project.scripts]
 brailer-monitor = "brailer_monitor.cli:main"

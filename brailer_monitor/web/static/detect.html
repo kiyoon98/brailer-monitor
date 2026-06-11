@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brailer YOLO Pipeline</title>
+  <link rel="stylesheet" href="/static/detect.css" />
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1>Brailer YOLO Pipeline</h1>
+      <p class="subtitle">CVAT 1.1 → YOLO 학습 → 비디오 탐지</p>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>1. CVAT 데이터 Import</h2>
+      <p class="hint">CVAT for video 1.1 (.zip 또는 annotations.xml)</p>
+      <label class="file-label">Annotation 파일
+        <input id="cvatZip" type="file" accept=".zip,.xml" />
+      </label>
+      <label class="file-label">원본 영상 (annotation에 이미지 없을 때 필수)
+        <input id="cvatVideo" type="file" accept="video/*" />
+      </label>
+      <button id="importBtn" type="button">Import</button>
+      <div id="importStatus" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <h2>2. YOLO 학습</h2>
+      <div class="row">
+        <label>Epochs <input id="epochs" type="number" value="50" min="1" /></label>
+        <label>Batch <input id="batch" type="number" value="8" min="1" /></label>
+      </div>
+      <button id="trainBtn" type="button" disabled>학습 시작</button>
+      <div id="trainProgressWrap" class="progress-wrap hidden">
+        <div class="progress-bar"><div id="trainProgressBar" class="progress-fill"></div></div>
+        <span id="trainProgressText" class="progress-text"></span>
+      </div>
+      <div id="trainStatus" class="status"></div>
+    </section>
+
+    <section class="panel">
+      <h2>3. 비디오 탐지</h2>
+      <input id="detectVideo" type="file" accept="video/*" />
+      <div class="row">
+        <label>프레임 간격 <input id="frameStride" type="number" value="5" min="1" /></label>
+        <label>Confidence <input id="confidence" type="number" value="0.35" min="0.05" max="1" step="0.05" /></label>
+      </div>
+      <button id="detectBtn" type="button" disabled>탐지 시작</button>
+      <div id="detectProgressWrap" class="progress-wrap hidden">
+        <div class="progress-bar"><div id="detectProgressBar" class="progress-fill"></div></div>
+        <span id="detectProgressText" class="progress-text"></span>
+      </div>
+      <div id="detectStatus" class="status"></div>
+    </section>
+
+    <section class="panel full">
+      <h2>프레임별 탐지 결과 <span id="frameCount" class="badge">0</span></h2>
+      <div id="frameResults" class="frame-results"></div>
+    </section>
+  </main>
+
+  <script src="/static/detect.js?v=3"></script>
+</body>
+</html>

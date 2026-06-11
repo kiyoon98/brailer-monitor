@@ -1,0 +1,12 @@
+{
+  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/task_2323564_annotations_2026_06_11_05_48_04_cvat for video 1.1.zip",
+  "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/JJR-102283_stream04_260310_202016.mp4",
+  "frame_source": "video",
+  "task_type": "segment",
+  "class_names": [
+    "brailer"
+  ],
+  "train_images": 78,
+  "val_images": 19,
+  "total_annotations": 97
+}

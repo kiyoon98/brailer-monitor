@@ -1,9 +1,9 @@
-# YOLO training dataset config — update paths after labeling.
-path: data/dataset
+# Generated from CVAT 1.1 import
+path: /home/koast/Documents/brailer-monitor/data/dataset
 train: images/train
 val: images/val
 
 names:
-  0: brailer_loaded
-  1: brailer_empty
-  2: reference
+  0: brailer
+
+# task: segment, train: 78, val: 19

@@ -8,7 +8,8 @@ build/
 venv/
 output/
 runs/
-data/dataset/
+data/raw/*.mp4
+data/dataset/staging/
 models/*.pt
 models/*.engine
 models/*.onnx

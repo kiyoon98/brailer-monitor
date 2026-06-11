@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brailer Annotator</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1>Brailer Annotator</h1>
+      <p class="subtitle">브레일러 다각형을 직접 그려 <code>brailer_loaded</code> 레이블 입력</p>
+    </div>
+    <div class="header-actions">
+      <select id="jobSelect" aria-label="작업 선택"></select>
+      <button id="openLocalBtn" type="button">기본 영상 열기</button>
+      <button id="refreshJobsBtn" type="button">새로고침</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel side-panel">
+      <h2>영상</h2>
+      <div id="dropZone" class="drop-zone">
+        <input id="fileInput" type="file" accept="video/*" hidden />
+        <p>영상 업로드 (드래그 또는 클릭)</p>
+      </div>
+
+      <video id="videoPlayer" class="video-player hidden" controls></video>
+
+      <div class="seek-controls">
+        <label>
+          시간 (초)
+          <input id="timestampInput" type="number" value="35" min="0" step="0.1" />
+        </label>
+        <button id="captureBtn" type="button" disabled>프레임 가져오기</button>
+      </div>
+
+      <div class="bookmark-row">
+        <span class="hint">북마크:</span>
+        <button type="button" class="bookmark" data-sec="35">35s</button>
+        <button type="button" class="bookmark" data-sec="207">207s</button>
+      </div>
+
+      <div id="jobInfo" class="job-info hidden"></div>
+
+      <div class="auto-detect-panel">
+        <h3>참조 기반 자동 감지</h3>
+        <p class="hint">수동 레이블 1개 이상 필요 (35s, 207s 등)</p>
+        <div class="auto-detect-controls">
+          <label>
+            간격 (초)
+            <input id="autoInterval" type="number" value="5" min="0.5" max="60" step="0.5" />
+          </label>
+          <label>
+            임계값
+            <input id="autoThreshold" type="number" value="0.55" min="0.1" max="1" step="0.05" />
+          </label>
+        </div>
+        <button id="autoDetectBtn" type="button" class="secondary" disabled>자동 감지 시작</button>
+        <div id="autoDetectStatus" class="auto-detect-status hidden">
+          <div class="progress-bar"><div id="autoProgressBar" class="progress-fill"></div></div>
+          <span id="autoProgressText">대기 중</span>
+        </div>
+      </div>
+
+      <h3>캡처 프레임 <span id="frameCount" class="badge">0</span></h3>
+      <div id="frameList" class="frame-list"></div>
+
+      <button id="exportBtn" type="button" class="secondary" disabled>학습용 dataset으로보내기</button>
+    </section>
+
+    <section class="panel main-panel">
+      <div class="toolbar">
+        <button id="undoPointBtn" type="button" disabled>마지막 점 취소</button>
+        <button id="clearPolygonBtn" type="button" disabled>다각형 지우기</button>
+        <button id="saveLabelBtn" type="button" disabled>레이블 저장</button>
+        <button id="deleteLabelBtn" type="button" class="danger" disabled>레이블 삭제</button>
+      </div>
+
+      <p class="hint draw-hint">캔버스를 클릭하여 브레일러 외곽을 따라 점을 찍으세요. 최소 3점 후 <strong>레이블 저장</strong>을 누르세요.</p>
+
+      <div class="canvas-wrap">
+        <canvas id="annotCanvas"></canvas>
+        <div id="emptyCanvas" class="empty-viewer">프레임을 가져온 뒤 다각형을 그리세요.</div>
+      </div>
+
+      <div id="frameMeta" class="frame-meta hidden">
+        <h3>프레임 정보</h3>
+        <dl>
+          <dt>프레임 ID</dt><dd id="metaFrameId">-</dd>
+          <dt>시간</dt><dd id="metaTime">-</dd>
+          <dt>프레임 #</dt><dd id="metaFrameIndex">-</dd>
+          <dt>그린 점</dt><dd id="metaDrawPoints">0</dd>
+          <dt>저장된 점</dt><dd id="metaSavedPoints">-</dd>
+          <dt>면적 비율</dt><dd id="metaArea">-</dd>
+          <dt>출처</dt><dd id="metaSource">-</dd>
+          <dt>자동 점수</dt><dd id="metaScore">-</dd>
+        </dl>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

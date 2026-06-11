@@ -1,0 +1,29 @@
+[
+  {
+    "frame_id": "t0035000_f00525",
+    "timestamp_sec": 35.0,
+    "frame_index": 525,
+    "image": "t0035000_f00525.jpg",
+    "has_label": true,
+    "source": "manual",
+    "score": null
+  },
+  {
+    "frame_id": "t0206000_f03090",
+    "timestamp_sec": 206.0,
+    "frame_index": 3090,
+    "image": "t0206000_f03090.jpg",
+    "has_label": false,
+    "source": "manual",
+    "score": null
+  },
+  {
+    "frame_id": "t0207000_f03105",
+    "timestamp_sec": 207.0,
+    "frame_index": 3105,
+    "image": "t0207000_f03105.jpg",
+    "has_label": true,
+    "source": "manual",
+    "score": null
+  }
+]

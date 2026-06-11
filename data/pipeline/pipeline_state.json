@@ -1,0 +1,31 @@
+{
+  "import_status": "completed",
+  "import_result": {
+    "dataset_root": "/home/koast/Documents/brailer-monitor/data/dataset",
+    "task_type": "segment",
+    "class_names": [
+      "brailer"
+    ],
+    "train_images": 78,
+    "val_images": 19,
+    "total_annotations": 97,
+    "yaml_path": "/home/koast/Documents/brailer-monitor/config/dataset.yaml",
+    "meta_path": "/home/koast/Documents/brailer-monitor/data/dataset/import_meta.json"
+  },
+  "import_error": null,
+  "train_status": "completed",
+  "train_progress": "done",
+  "train_epoch": 10,
+  "train_epochs": 10,
+  "train_progress_pct": 1.0,
+  "train_weights": "/home/koast/Documents/brailer-monitor/runs/segment/runs/segment/brailer_seg-4/weights/best.pt",
+  "train_error": null,
+  "detect_status": "completed",
+  "detect_job_id": "e62a3c0039b3",
+  "detect_progress_pct": 1.0,
+  "detect_processed_frames": 4500,
+  "detect_total_frames": 4500,
+  "detect_frames_with_objects": 0,
+  "detect_error": null,
+  "updated_at": "2026-06-11T07:18:55.893743+00:00"
+}
