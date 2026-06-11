@@ -16,6 +16,7 @@ from brailer_monitor.cvat_import import (
     _parse_cvat_xml,
     import_cvat,
     import_cvat_zip,
+    inspect_cvat,
 )
 
 
@@ -68,6 +69,20 @@ class CvatImportTests(unittest.TestCase):
         self.assertEqual(len(anns), 1)
         self.assertEqual(anns[0].shape, "polygon")
         self.assertEqual(anns[0].frame_id, 3)
+
+    def test_inspect_cvat_lists_defined_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            zip_path = self._make_track_zip(tmp_path)
+            summary = inspect_cvat(zip_path)
+            self.assertEqual(summary["class_names"], ["brailer_loaded"])
+            self.assertEqual(len(summary["objects"]), 1)
+            obj = summary["objects"][0]
+            self.assertEqual(obj["name"], "brailer_loaded")
+            self.assertEqual(obj["annotation_count"], 2)
+            self.assertEqual(obj["box_count"], 2)
+            self.assertEqual(obj["frame_count"], 2)
+            self.assertEqual(summary["task_type"], "detect")
 
     def _make_xml_only_zip(self, directory: Path) -> Path:
         xml = """<?xml version="1.0" encoding="utf-8"?>

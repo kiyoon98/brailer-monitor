@@ -7,6 +7,7 @@ import logging
 import random
 import re
 import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,8 +41,10 @@ class ImportResult:
     yaml_path: Path
     meta_path: Path
 
+    label_summary: dict[str, Any] | None = None
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "dataset_root": str(self.dataset_root),
             "task_type": self.task_type,
             "class_names": self.class_names,
@@ -51,6 +54,9 @@ class ImportResult:
             "yaml_path": str(self.yaml_path),
             "meta_path": str(self.meta_path),
         }
+        if self.label_summary is not None:
+            payload["label_summary"] = self.label_summary
+        return payload
 
 
 def _parse_points(points: str) -> list[tuple[float, float]]:
@@ -160,6 +166,108 @@ def _parse_cvat_xml(xml_path: Path) -> tuple[list[CvatAnnotation], dict[int, tup
         labels = sorted({ann.label for ann in annotations})
 
     return annotations, frame_sizes, labels
+
+
+def _parse_cvat_label_meta(xml_path: Path) -> dict[str, dict[str, str | None]]:
+    root = ET.parse(xml_path).getroot()
+    meta: dict[str, dict[str, str | None]] = {}
+    for label_elem in root.findall(".//labels/label"):
+        name = label_elem.findtext("name")
+        if not name:
+            continue
+        name = name.strip()
+        meta[name] = {
+            "color": (label_elem.findtext("color") or "").strip() or None,
+            "type": (label_elem.findtext("type") or "").strip() or None,
+        }
+    return meta
+
+
+def summarize_cvat_annotations(
+    annotations: list[CvatAnnotation],
+    class_names: list[str],
+    label_meta: dict[str, dict[str, str | None]] | None = None,
+) -> dict[str, Any]:
+    """Build a per-label summary from parsed CVAT annotations."""
+    label_meta = label_meta or {}
+    names = list(class_names)
+    for ann in annotations:
+        if ann.label not in names:
+            names.append(ann.label)
+
+    per_label: dict[str, dict[str, Any]] = {}
+    for name in names:
+        meta = label_meta.get(name, {})
+        per_label[name] = {
+            "name": name,
+            "color": meta.get("color"),
+            "cvat_type": meta.get("type"),
+            "annotation_count": 0,
+            "box_count": 0,
+            "polygon_count": 0,
+            "frame_ids": set(),
+        }
+
+    for ann in annotations:
+        entry = per_label.setdefault(
+            ann.label,
+            {
+                "name": ann.label,
+                "color": label_meta.get(ann.label, {}).get("color"),
+                "cvat_type": label_meta.get(ann.label, {}).get("type"),
+                "annotation_count": 0,
+                "box_count": 0,
+                "polygon_count": 0,
+                "frame_ids": set(),
+            },
+        )
+        entry["annotation_count"] += 1
+        entry["frame_ids"].add(ann.frame_id)
+        if ann.shape == "polygon":
+            entry["polygon_count"] += 1
+        else:
+            entry["box_count"] += 1
+
+    objects = []
+    for name in names:
+        entry = per_label[name]
+        objects.append(
+            {
+                "name": entry["name"],
+                "color": entry["color"],
+                "cvat_type": entry["cvat_type"],
+                "annotation_count": entry["annotation_count"],
+                "box_count": entry["box_count"],
+                "polygon_count": entry["polygon_count"],
+                "frame_count": len(entry["frame_ids"]),
+            }
+        )
+
+    has_polygon = any(ann.shape == "polygon" for ann in annotations)
+    return {
+        "class_names": names,
+        "objects": objects,
+        "total_annotations": len(annotations),
+        "annotated_frames": len({ann.frame_id for ann in annotations}),
+        "task_type": "segment" if has_polygon else "detect",
+    }
+
+
+def inspect_cvat(annotations_path: Path) -> dict[str, Any]:
+    """Read CVAT 1.1 export and return defined labels with annotation counts."""
+    if not annotations_path.exists():
+        raise FileNotFoundError(f"CVAT annotations not found: {annotations_path}")
+
+    with tempfile.TemporaryDirectory(prefix="cvat_inspect_") as tmp:
+        work_dir = Path(tmp)
+        xml_path, _ = _prepare_annotations_source(annotations_path, work_dir)
+        annotations, _, class_names = _parse_cvat_xml(xml_path)
+        label_meta = _parse_cvat_label_meta(xml_path)
+        if not class_names and not label_meta:
+            raise ValueError("No labels found in CVAT XML")
+        if not class_names:
+            class_names = sorted(label_meta.keys())
+        return summarize_cvat_annotations(annotations, class_names, label_meta)
 
 
 def _frame_number_from_name(name: str) -> int | None:
@@ -310,6 +418,8 @@ def import_cvat(
 
     xml_path, extract_dir = _prepare_annotations_source(annotations_path, work_dir)
     annotations, frame_sizes, class_names = _parse_cvat_xml(xml_path)
+    label_meta = _parse_cvat_label_meta(xml_path)
+    label_summary = summarize_cvat_annotations(annotations, class_names, label_meta)
     if not annotations:
         raise ValueError("No annotations found in CVAT XML")
 
@@ -399,6 +509,7 @@ def import_cvat(
         "frame_source": frame_source,
         "task_type": task_type,
         "class_names": class_names,
+        "label_summary": label_summary,
         "train_images": train_n,
         "val_images": val_n,
         "total_annotations": total_ann,
@@ -425,6 +536,7 @@ def import_cvat(
         total_annotations=total_ann,
         yaml_path=yaml_path,
         meta_path=meta_path,
+        label_summary=label_summary,
     )
 
 

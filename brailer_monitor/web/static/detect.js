@@ -3,6 +3,7 @@ const els = {
   cvatVideo: document.getElementById("cvatVideo"),
   importBtn: document.getElementById("importBtn"),
   importStatus: document.getElementById("importStatus"),
+  importLabels: document.getElementById("importLabels"),
   epochs: document.getElementById("epochs"),
   batch: document.getElementById("batch"),
   trainBtn: document.getElementById("trainBtn"),
@@ -19,13 +20,21 @@ const els = {
   detectProgressBar: document.getElementById("detectProgressBar"),
   detectProgressText: document.getElementById("detectProgressText"),
   frameResults: document.getElementById("frameResults"),
+  importFramePanel: document.getElementById("importFramePanel"),
+  importFrameCount: document.getElementById("importFrameCount"),
+  importFrameSplit: document.getElementById("importFrameSplit"),
+  importFrameResults: document.getElementById("importFrameResults"),
+  importFrameMore: document.getElementById("importFrameMore"),
 };
 
 const POLL_MS = 500;
+const IMPORT_FRAME_LIMIT = 48;
 
 let pollTimer = null;
 let handledDetectJobId = null;
 let activeDetectJobId = null;
+let importFrameOffset = 0;
+let importFrameTotal = 0;
 
 async function api(path, options = {}) {
   const res = await fetch(path, options);
@@ -62,6 +71,112 @@ function detectProgressText(processed, total, withObjects, pct) {
   return `탐지 중 ${processed}/${totalLabel} 프레임 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)`;
 }
 
+function shapeSummary(obj) {
+  const parts = [];
+  if (obj.polygon_count > 0) parts.push(`polygon ${obj.polygon_count}`);
+  if (obj.box_count > 0) parts.push(`box ${obj.box_count}`);
+  return parts.length ? parts.join(", ") : "annotation 없음";
+}
+
+function renderLabelSummary(summary) {
+  const wrap = els.importLabels;
+  if (!summary?.objects?.length) {
+    wrap.classList.add("hidden");
+    wrap.innerHTML = "";
+    return;
+  }
+
+  const items = summary.objects
+    .map((obj) => {
+      const color = obj.color || "#3b82f6";
+      const typeLabel = obj.cvat_type ? ` · CVAT ${obj.cvat_type}` : "";
+      return `
+        <li class="label-item">
+          <span class="label-swatch" style="background:${color}"></span>
+          <div class="label-name">${obj.name}</div>
+          <div class="label-meta">
+            annotation ${obj.annotation_count}개 · ${obj.frame_count}프레임 · ${shapeSummary(obj)}${typeLabel}
+          </div>
+        </li>`;
+    })
+    .join("");
+
+  wrap.classList.remove("hidden");
+  wrap.innerHTML = `
+    <h3>정의된 객체 (${summary.objects.length})</h3>
+    <ul class="label-list">${items}</ul>
+    <div class="label-summary-foot">
+      총 ${summary.total_annotations} annotation · ${summary.annotated_frames}프레임 · YOLO ${summary.task_type}
+    </div>`;
+}
+
+function appendImportFrameCards(frames) {
+  for (const frame of frames) {
+    const card = document.createElement("div");
+    card.className = "frame-card";
+    const objects = (frame.objects || [])
+      .map((obj) => `${obj.class_name} (${obj.shape})`)
+      .join("<br>");
+    card.innerHTML = `
+      <img src="${frame.preview_url}" alt="" loading="lazy" />
+      <div class="meta">
+        <div>
+          <strong>frame #${frame.frame_index}</strong>
+          <span class="split-tag">${frame.split}</span>
+        </div>
+        <div class="objects">${objects || "(객체 없음)"}</div>
+      </div>`;
+    els.importFrameResults.appendChild(card);
+  }
+}
+
+async function loadImportFrames({ reset = false } = {}) {
+  if (reset) {
+    importFrameOffset = 0;
+    els.importFrameResults.innerHTML = "";
+  }
+  const split = els.importFrameSplit.value;
+  try {
+    const data = await api(
+      `/api/pipeline/dataset/frames?split=${encodeURIComponent(split)}&offset=${importFrameOffset}&limit=${IMPORT_FRAME_LIMIT}`,
+    );
+    importFrameTotal = data.total || 0;
+    els.importFrameCount.textContent = importFrameTotal;
+    if (importFrameTotal === 0) {
+      els.importFramePanel.classList.add("hidden");
+      return;
+    }
+    els.importFramePanel.classList.remove("hidden");
+    appendImportFrameCards(data.frames || []);
+    importFrameOffset += (data.frames || []).length;
+    els.importFrameMore.classList.toggle("hidden", importFrameOffset >= importFrameTotal);
+  } catch (err) {
+    if (reset) {
+      els.importFramePanel.classList.add("hidden");
+      els.importFrameResults.innerHTML = "";
+    }
+    console.error("loadImportFrames failed", err);
+  }
+}
+
+async function previewCvatFile(file) {
+  if (!file) {
+    renderLabelSummary(null);
+    return;
+  }
+  const form = new FormData();
+  form.append("file", file);
+  els.importLabels.classList.remove("hidden");
+  els.importLabels.innerHTML = '<div class="label-summary-foot">annotation 읽는 중...</div>';
+  try {
+    const summary = await api("/api/pipeline/preview-cvat", { method: "POST", body: form });
+    renderLabelSummary(summary);
+  } catch (err) {
+    renderLabelSummary(null);
+    setStatus(els.importStatus, err.message, "error");
+  }
+}
+
 function showDetectProgress(processed, total, withObjects, pct) {
   setProgress(
     els.detectProgressWrap,
@@ -80,10 +195,27 @@ function renderPipelineState(state) {
   if (state.import_status === "completed" && meta) {
     setStatus(
       els.importStatus,
-      `완료: ${meta.class_names.join(", ")} · train ${meta.train_images} / val ${meta.val_images} · ${meta.task_type}`,
+      `Import 완료 · train ${meta.train_images} / val ${meta.val_images} · ${meta.task_type}`,
       "ok",
     );
+    if (meta.label_summary) {
+      renderLabelSummary(meta.label_summary);
+    } else if (meta.class_names?.length) {
+      renderLabelSummary({
+        objects: meta.class_names.map((name) => ({
+          name,
+          annotation_count: 0,
+          box_count: 0,
+          polygon_count: 0,
+          frame_count: 0,
+        })),
+        total_annotations: meta.total_annotations || 0,
+        annotated_frames: 0,
+        task_type: meta.task_type,
+      });
+    }
     els.trainBtn.disabled = false;
+    loadImportFrames({ reset: true });
   } else if (state.import_status === "error") {
     setStatus(els.importStatus, state.import_error, "error");
   } else if (state.import_status === "running") {
@@ -255,6 +387,18 @@ function needsPolling(state) {
   return state.train_status === "running" || state.detect_status === "running";
 }
 
+els.cvatZip.addEventListener("change", () => {
+  previewCvatFile(els.cvatZip.files[0]);
+});
+
+els.importFrameSplit.addEventListener("change", () => {
+  loadImportFrames({ reset: true });
+});
+
+els.importFrameMore.addEventListener("click", () => {
+  loadImportFrames();
+});
+
 els.importBtn.addEventListener("click", async () => {
   const file = els.cvatZip.files[0];
   if (!file) return alert("CVAT annotation 파일(.zip 또는 .xml)을 선택하세요.");
@@ -267,9 +411,13 @@ els.importBtn.addEventListener("click", async () => {
     const result = await api("/api/pipeline/import-cvat", { method: "POST", body: form });
     setStatus(
       els.importStatus,
-      `완료: ${result.class_names.join(", ")} · train ${result.train_images} / val ${result.val_images}`,
+      `Import 완료 · train ${result.train_images} / val ${result.val_images} · ${result.task_type}`,
       "ok",
     );
+    if (result.label_summary) {
+      renderLabelSummary(result.label_summary);
+    }
+    await loadImportFrames({ reset: true });
     els.trainBtn.disabled = false;
   } catch (err) {
     setStatus(els.importStatus, err.message, "error");
@@ -324,6 +472,12 @@ els.detectBtn.addEventListener("click", async () => {
 api("/api/pipeline/state")
   .then(({ state }) => {
     renderPipelineState(state);
+    if (state.dataset_meta?.label_summary) {
+      renderLabelSummary(state.dataset_meta.label_summary);
+    }
+    if (state.import_status === "completed" && state.dataset_meta) {
+      loadImportFrames({ reset: true });
+    }
     if (state.detect_status === "running" && state.detect_job_id) {
       activeDetectJobId = state.detect_job_id;
     }

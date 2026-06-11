@@ -6,10 +6,13 @@ import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+import cv2
 
+from ..cvat_import import inspect_cvat
+from ..dataset_preview import list_dataset_frames, render_dataset_preview
 from .annotation import AnnotationManager
 from .detect_pipeline import DetectPipelineManager
 
@@ -66,6 +69,62 @@ async def annotate_page() -> FileResponse:
 @app.get("/api/pipeline/state")
 async def pipeline_state() -> dict:
     return {"state": pipeline.get_state()}
+
+
+@app.get("/api/pipeline/dataset/frames")
+async def pipeline_dataset_frames(
+    split: str = "all",
+    offset: int = 0,
+    limit: int = 60,
+) -> dict:
+    try:
+        return list_dataset_frames(
+            DATASET_ROOT,
+            split=split,
+            offset=offset,
+            limit=limit,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/pipeline/dataset/preview/{split}/{filename}")
+async def pipeline_dataset_preview(split: str, filename: str) -> Response:
+    try:
+        vis = render_dataset_preview(DATASET_ROOT, split, filename)
+        ok, buf = cv2.imencode(".jpg", vis, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        if not ok:
+            raise RuntimeError("Failed to encode preview")
+        return Response(content=buf.tobytes(), media_type="image/jpeg")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/pipeline/preview-cvat")
+async def pipeline_preview_cvat(file: UploadFile = File(...)) -> dict:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No annotations file")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".zip", ".xml"}:
+        raise HTTPException(status_code=400, detail="Upload CVAT .zip or annotations.xml")
+
+    temp = PIPELINE_ROOT / "_uploads"
+    temp.mkdir(parents=True, exist_ok=True)
+    ann_path = temp / file.filename
+
+    with ann_path.open("wb") as handle:
+        shutil.copyfileobj(file.file, handle)
+
+    try:
+        return inspect_cvat(ann_path)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        ann_path.unlink(missing_ok=True)
 
 
 @app.post("/api/pipeline/import-cvat")

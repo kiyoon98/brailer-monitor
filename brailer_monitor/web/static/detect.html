@@ -26,6 +26,7 @@
       </label>
       <button id="importBtn" type="button">Import</button>
       <div id="importStatus" class="status"></div>
+      <div id="importLabels" class="label-summary hidden"></div>
     </section>
 
     <section class="panel">
@@ -57,12 +58,27 @@
       <div id="detectStatus" class="status"></div>
     </section>
 
+    <section id="importFramePanel" class="panel full hidden">
+      <div class="panel-head">
+        <h2>Import된 프레임 <span id="importFrameCount" class="badge">0</span></h2>
+        <label class="split-filter">Split
+          <select id="importFrameSplit">
+            <option value="all">전체</option>
+            <option value="train">train</option>
+            <option value="val">val</option>
+          </select>
+        </label>
+      </div>
+      <div id="importFrameResults" class="frame-results"></div>
+      <button id="importFrameMore" type="button" class="secondary hidden">더 보기</button>
+    </section>
+
     <section class="panel full">
       <h2>프레임별 탐지 결과 <span id="frameCount" class="badge">0</span></h2>
       <div id="frameResults" class="frame-results"></div>
     </section>
   </main>
 
-  <script src="/static/detect.js?v=3"></script>
+  <script src="/static/detect.js?v=5"></script>
 </body>
 </html>

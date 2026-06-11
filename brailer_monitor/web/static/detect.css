@@ -40,10 +40,54 @@ input[type="text"]:focus {
 input::placeholder { color: #94a3b8; }
 .file-label { display: grid; gap: 0.25rem; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
 button { background: var(--accent); color: white; border: none; border-radius: 8px; padding: 0.5rem 1rem; font-weight: 600; cursor: pointer; margin-top: 0.5rem; }
+button.secondary { background: #243044; color: var(--text); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.panel-head h2 { margin: 0; }
+.split-filter { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); }
+.split-filter select {
+  background: #121820;
+  color: #f1f5f9;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.85rem;
+}
+.frame-card .split-tag {
+  display: inline-block;
+  background: #243044;
+  color: var(--muted);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  margin-left: 0.35rem;
+}
 .status { margin-top: 0.5rem; font-size: 0.85rem; color: var(--muted); min-height: 1.2rem; }
 .status.error { color: var(--danger); }
 .status.ok { color: var(--success); }
+.label-summary { margin-top: 0.75rem; }
+.label-summary h3 { margin: 0 0 0.5rem; font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+.label-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.45rem; }
+.label-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem 0.75rem;
+  align-items: start;
+  background: #121820;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+}
+.label-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  margin-top: 0.15rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.label-name { font-weight: 600; font-size: 0.9rem; }
+.label-meta { grid-column: 2; font-size: 0.78rem; color: var(--muted); line-height: 1.45; }
+.label-summary-foot { margin-top: 0.45rem; font-size: 0.78rem; color: var(--muted); }
 .badge { background: #243044; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.8rem; }
 .hidden { display: none !important; }
 .progress-wrap { margin-top: 0.5rem; }

@@ -6,6 +6,25 @@
   "class_names": [
     "brailer"
   ],
+  "label_summary": {
+    "class_names": [
+      "brailer"
+    ],
+    "objects": [
+      {
+        "name": "brailer",
+        "color": "#7c6453",
+        "cvat_type": "any",
+        "annotation_count": 97,
+        "box_count": 0,
+        "polygon_count": 97,
+        "frame_count": 97
+      }
+    ],
+    "total_annotations": 97,
+    "annotated_frames": 97,
+    "task_type": "segment"
+  },
   "train_images": 78,
   "val_images": 19,
   "total_annotations": 97
