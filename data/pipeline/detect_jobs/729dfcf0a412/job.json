@@ -1,0 +1,12 @@
+{
+  "job_id": "729dfcf0a412",
+  "video_name": "JJR-102283_stream04_260310_044016.mp4",
+  "created_at": "2026-06-15T05:25:34.752977+00:00",
+  "status": "running",
+  "progress": 0.7955555555555556,
+  "processed_frames": 358,
+  "total_frames": 450,
+  "frames_with_detections": 0,
+  "manifest_path": null,
+  "error": null
+}

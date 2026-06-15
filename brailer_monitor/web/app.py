@@ -13,6 +13,7 @@ import cv2
 
 from ..cvat_import import inspect_cvat
 from ..dataset_preview import list_dataset_frames, render_dataset_preview
+from ..lake_video_source import discover_videos_in_range, list_candidate_videos, load_lake_video_config
 from .annotation import AnnotationManager
 from .detect_pipeline import DetectPipelineManager
 
@@ -37,6 +38,19 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 class CaptureRequest(BaseModel):
     timestamp_sec: float = Field(ge=0)
+
+
+class LakeRangeRequest(BaseModel):
+    start_month: int = Field(ge=1, le=12)
+    start_day: int = Field(ge=1, le=31)
+    start_hour: int = Field(ge=0, le=23)
+    end_month: int = Field(ge=1, le=12)
+    end_day: int = Field(ge=1, le=31)
+    end_hour: int = Field(ge=0, le=23)
+    frame_stride: int = Field(default=5, ge=1)
+    confidence: float = Field(default=0.35, ge=0.05, le=1.0)
+    device: str | int = 0
+    check_exists: bool = True
 
 
 class LabelRequest(BaseModel):
@@ -181,6 +195,16 @@ async def pipeline_train(body: TrainRequest) -> dict:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.post("/api/pipeline/train/stop")
+async def pipeline_train_stop() -> dict:
+    return pipeline.cancel_training()
+
+
+@app.post("/api/pipeline/detect/stop")
+async def pipeline_detect_stop() -> dict:
+    return pipeline.cancel_detection()
+
+
 @app.post("/api/pipeline/detect")
 async def pipeline_detect(
     files: list[UploadFile] = File(...),
@@ -205,7 +229,7 @@ async def pipeline_detect(
             temp_path = temp / upload.filename
             with temp_path.open("wb") as handle:
                 shutil.copyfileobj(upload.file, handle)
-            saved.append((temp_path, upload.filename))
+            saved.append({"video_path": temp_path, "video_name": upload.filename})
 
         if not saved:
             raise HTTPException(status_code=400, detail="No valid video files")
@@ -219,8 +243,86 @@ async def pipeline_detect(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     finally:
-        for temp_path, _ in saved:
-            temp_path.unlink(missing_ok=True)
+        for item in saved:
+            item["video_path"].unlink(missing_ok=True)
+
+
+@app.get("/api/pipeline/lake-videos/config")
+async def pipeline_lake_video_config() -> dict:
+    config = load_lake_video_config(CONFIG_DIR / "lake_video.json")
+    return {
+        "base_url": config.base_url,
+        "file_prefix": config.file_prefix,
+        "year": config.year,
+        "minute_slots": list(config.minute_slots),
+    }
+
+
+@app.post("/api/pipeline/lake-videos/discover")
+async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
+    config = load_lake_video_config(CONFIG_DIR / "lake_video.json")
+    try:
+        candidates = list_candidate_videos(
+            start_month=body.start_month,
+            start_day=body.start_day,
+            start_hour=body.start_hour,
+            end_month=body.end_month,
+            end_day=body.end_day,
+            end_hour=body.end_hour,
+            config=config,
+        )
+        videos = discover_videos_in_range(
+            start_month=body.start_month,
+            start_day=body.start_day,
+            start_hour=body.start_hour,
+            end_month=body.end_month,
+            end_day=body.end_day,
+            end_hour=body.end_hour,
+            config=config,
+            check_exists=body.check_exists,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "candidate_count": len(candidates),
+        "found_count": len(videos),
+        "base_url": config.base_url,
+        "videos": videos[:24],
+        "sample_missing": max(0, len(candidates) - len(videos)),
+    }
+
+
+@app.post("/api/pipeline/detect/lake")
+async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
+    config = load_lake_video_config(CONFIG_DIR / "lake_video.json")
+    try:
+        videos = discover_videos_in_range(
+            start_month=body.start_month,
+            start_day=body.start_day,
+            start_hour=body.start_hour,
+            end_month=body.end_month,
+            end_day=body.end_day,
+            end_hour=body.end_hour,
+            config=config,
+            check_exists=body.check_exists,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not videos:
+        raise HTTPException(status_code=404, detail="해당 구간에서 비디오를 찾지 못했습니다.")
+
+    payload = [{"video_name": video["filename"], "remote_url": video["url"]} for video in videos]
+    try:
+        return pipeline.start_detection_batch(
+            payload,
+            frame_stride=body.frame_stride,
+            confidence=body.confidence,
+            device=body.device,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/pipeline/detect/timeline")

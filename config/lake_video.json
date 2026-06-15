@@ -1,0 +1,7 @@
+{
+  "base_url": "http://10.2.10.158:8041/media/lake_win/2026_decrypted/",
+  "file_prefix": "JJR-102283_stream04",
+  "year": 2026,
+  "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+  "second_suffix": "16"
+}

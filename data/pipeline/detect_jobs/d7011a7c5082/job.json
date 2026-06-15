@@ -1,0 +1,12 @@
+{
+  "job_id": "d7011a7c5082",
+  "video_name": "JJR-102283_stream04_260310_223016.mp4",
+  "created_at": "2026-06-15T04:17:06.103931+00:00",
+  "status": "cancelled",
+  "progress": 0.7822222222222223,
+  "processed_frames": 352,
+  "total_frames": 450,
+  "frames_with_detections": 7,
+  "manifest_path": null,
+  "error": "\uc0ac\uc6a9\uc790\uac00 \uc911\uc9c0\ud568"
+}

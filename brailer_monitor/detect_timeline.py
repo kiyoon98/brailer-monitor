@@ -46,7 +46,23 @@ def _video_duration_sec(manifest: dict[str, Any]) -> float:
     return 0.0
 
 
-def _frame_to_dict(event: dict[str, Any], *, class_name: str, confidence: float) -> dict[str, Any]:
+def detection_area_px(det: dict[str, Any]) -> int:
+    """Pixel area inside the detection mask, or bounding-box area as fallback."""
+    if det.get("area_px") is not None:
+        return int(det["area_px"])
+    bbox = det.get("bbox_xyxy") or []
+    if len(bbox) == 4:
+        return int(max(0.0, float(bbox[2]) - float(bbox[0])) * max(0.0, float(bbox[3]) - float(bbox[1])))
+    return 0
+
+
+def _frame_to_dict(
+    event: dict[str, Any],
+    *,
+    class_name: str,
+    confidence: float,
+    area_px: int,
+) -> dict[str, Any]:
     return {
         "job_id": event["job_id"],
         "video_name": event["video_name"],
@@ -57,6 +73,7 @@ def _frame_to_dict(event: dict[str, Any], *, class_name: str, confidence: float)
         "preview_path": event.get("preview_path"),
         "class_name": class_name,
         "confidence": confidence,
+        "area_px": area_px,
     }
 
 
@@ -78,6 +95,7 @@ def expand_class_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     event,
                     class_name=cls,
                     confidence=float(det.get("confidence", 0)),
+                    area_px=detection_area_px(det),
                 )
             )
     return expanded
@@ -122,6 +140,7 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
         time_label = start_label or end_label
 
     confidences = [float(f.get("confidence", 0)) for f in frames]
+    areas = [int(f.get("area_px") or 0) for f in frames]
     segment_id = f"{first['job_id']}:{first['class_name']}:{first.get('frame_index', 0)}"
 
     return {
@@ -138,6 +157,7 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
         "end_timestamp_sec": last.get("timestamp_sec"),
         "frame_count": len(frames),
         "max_confidence": max(confidences) if confidences else 0.0,
+        "max_area_px": max(areas) if areas else 0,
         "preview_path": first.get("preview_path"),
         "preview_job_id": first["job_id"],
     }
@@ -305,6 +325,22 @@ def list_timeline(
     total = len(segments)
     page = segments[offset : offset + limit]
     summary = timeline_range(timeline)
+    axis_segments = [
+        {
+            "segment_id": segment["segment_id"],
+            "job_id": segment["job_id"],
+            "class_name": segment["class_name"],
+            "start_absolute_time": segment["start_absolute_time"],
+            "end_absolute_time": segment["end_absolute_time"],
+            "time_label": segment["time_label"],
+            "preview_path": segment["preview_path"],
+            "preview_job_id": segment["preview_job_id"],
+            "frame_count": segment["frame_count"],
+            "max_confidence": segment.get("max_confidence"),
+            "max_area_px": segment.get("max_area_px"),
+        }
+        for segment in segments
+    ]
     return {
         "total": total,
         "offset": offset,
@@ -312,6 +348,7 @@ def list_timeline(
         "video_count": len(timeline.get("videos", [])),
         "event_count": len(timeline.get("events", [])),
         "segments": page,
+        "axis_segments": axis_segments,
         "videos": timeline.get("videos", []),
         **summary,
     }

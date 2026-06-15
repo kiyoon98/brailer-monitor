@@ -36,6 +36,7 @@
         <label>Batch <input id="batch" type="number" value="8" min="1" /></label>
       </div>
       <button id="trainBtn" type="button" disabled>학습 시작</button>
+      <button id="stopTrainBtn" type="button" class="secondary danger hidden">학습 중지</button>
       <div id="trainProgressWrap" class="progress-wrap hidden">
         <div class="progress-bar"><div id="trainProgressBar" class="progress-fill"></div></div>
         <span id="trainProgressText" class="progress-text"></span>
@@ -43,18 +44,42 @@
       <div id="trainStatus" class="status"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel full">
       <h2>3. 비디오 탐지</h2>
       <p class="hint">파일명 예: JJR-102283_stream04_260201_040016.mp4 → 2026-02-01 04:00 시작</p>
-      <label class="file-label">비디오 (여러 파일 선택 가능)
-        <input id="detectVideo" type="file" accept="video/*" multiple />
-      </label>
+      <div class="detect-source">
+        <label><input type="radio" name="detectSource" value="upload" checked /> 파일 업로드</label>
+        <label><input type="radio" name="detectSource" value="lake" /> Lake 저장소 (내부 네트워크)</label>
+      </div>
+      <div id="detectUploadSection">
+        <label class="file-label">비디오 (여러 파일 선택 가능)
+          <input id="detectVideo" type="file" accept="video/*" multiple />
+        </label>
+      </div>
+      <div id="detectLakeSection" class="hidden">
+        <p id="lakeBaseUrl" class="hint"></p>
+        <div class="row lake-range">
+          <span class="range-label">시작</span>
+          <label>월 <input id="lakeStartMonth" type="number" min="1" max="12" value="3" /></label>
+          <label>일 <input id="lakeStartDay" type="number" min="1" max="31" value="10" /></label>
+          <label>시 <input id="lakeStartHour" type="number" min="0" max="23" value="22" /></label>
+        </div>
+        <div class="row lake-range">
+          <span class="range-label">종료</span>
+          <label>월 <input id="lakeEndMonth" type="number" min="1" max="12" value="3" /></label>
+          <label>일 <input id="lakeEndDay" type="number" min="1" max="31" value="10" /></label>
+          <label>시 <input id="lakeEndHour" type="number" min="0" max="23" value="22" /></label>
+        </div>
+        <button id="lakeDiscoverBtn" type="button" class="secondary">영상 확인</button>
+        <div id="lakeDiscoverStatus" class="status"></div>
+      </div>
       <div class="row">
         <label>프레임 간격 <input id="frameStride" type="number" value="5" min="1" /></label>
         <label>Confidence <input id="confidence" type="number" value="0.35" min="0.05" max="1" step="0.05" /></label>
       </div>
       <div class="row detect-actions">
         <button id="detectBtn" type="button" disabled>탐지 시작</button>
+        <button id="stopDetectBtn" type="button" class="secondary danger hidden">탐지 중지</button>
         <button id="resetTimelineBtn" type="button" class="secondary">결과 초기화</button>
       </div>
       <div id="detectProgressWrap" class="progress-wrap hidden">
@@ -86,13 +111,26 @@
 
     <section class="panel full">
       <h2>탐지 타임라인 <span id="frameCount" class="badge">0</span></h2>
-      <div id="timelineSummary" class="timeline-summary"></div>
+      <p class="timeline-legend hint">백분율 = YOLO 신뢰도(해당 클래스일 확률) · 면적 = 탐지 마스크/박스 안쪽 픽셀 수</p>
       <div id="timelineAxis" class="timeline-axis hidden">
+        <div class="timeline-toolbar">
+          <span class="toolbar-label">타임라인</span>
+          <button id="timelineZoomOut" type="button" class="secondary" title="축소">−</button>
+          <span id="timelineZoomLabel" class="timeline-zoom-label">100%</span>
+          <button id="timelineZoomIn" type="button" class="secondary" title="확대">+</button>
+          <button id="timelineZoomReset" type="button" class="secondary">맞춤</button>
+          <span class="timeline-hint">가로 스크롤 · Ctrl+휠 확대/축소</span>
+        </div>
+        <div id="timelineViewport" class="timeline-viewport">
+          <div id="timelineTrack" class="timeline-track">
+            <div id="timelineTicks" class="timeline-ticks"></div>
+            <div id="timelineRail" class="timeline-rail"></div>
+          </div>
+        </div>
         <div class="timeline-axis-labels">
           <span id="timelineRangeStart" class="timeline-axis-start"></span>
           <span id="timelineRangeEnd" class="timeline-axis-end"></span>
         </div>
-        <div id="timelineRail" class="timeline-rail"></div>
       </div>
       <div id="frameResults" class="timeline-segment-list"></div>
       <button id="detectFrameMore" type="button" class="secondary hidden">더 보기</button>
@@ -102,11 +140,12 @@
   <div id="frameLightbox" class="frame-lightbox hidden" role="dialog" aria-modal="true" aria-label="프레임 확대 보기">
     <button id="frameLightboxClose" type="button" class="lightbox-close" aria-label="닫기">✕</button>
     <div class="lightbox-content">
+      <div id="frameLightboxGallery" class="lightbox-gallery hidden"></div>
       <img id="frameLightboxImg" alt="" />
       <div id="frameLightboxMeta" class="lightbox-meta"></div>
     </div>
   </div>
 
-  <script src="/static/detect.js?v=15"></script>
+  <script src="/static/detect.js?v=23"></script>
 </body>
 </html>

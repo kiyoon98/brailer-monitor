@@ -9,6 +9,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+class TrainingCancelled(Exception):
+    """Raised when the user stops an in-progress training job."""
+
+
 def _default_base_model(task_type: str) -> str:
     return "yolo11n-seg.pt" if task_type == "segment" else "yolo11n.pt"
 
@@ -41,6 +45,7 @@ def run_training(
     name: str | None = None,
     task_type: str | None = None,
     on_epoch_end: Callable[[int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Path:
     """
     Train a segmentation model on labeled brailer images.
@@ -68,12 +73,16 @@ def run_training(
     from ultralytics import YOLO
 
     model = YOLO(base_model)
-    if on_epoch_end is not None:
+    if on_epoch_end is not None or should_cancel is not None:
 
         def _epoch_callback(trainer: object) -> None:
-            epoch = int(getattr(trainer, "epoch", 0)) + 1
-            total = int(getattr(trainer, "epochs", epochs))
-            on_epoch_end(epoch, total)
+            if should_cancel and should_cancel():
+                setattr(trainer, "stop", True)
+                return
+            if on_epoch_end is not None:
+                epoch = int(getattr(trainer, "epoch", 0)) + 1
+                total = int(getattr(trainer, "epochs", epochs))
+                on_epoch_end(epoch, total)
 
         model.add_callback("on_train_epoch_end", _epoch_callback)
 
@@ -95,6 +104,8 @@ def run_training(
         save=True,
         plots=True,
     )
+    if should_cancel and should_cancel():
+        raise TrainingCancelled("Training cancelled by user")
     best = Path(project) / name / "weights" / "best.pt"
     if best.exists():
         models_dir = Path("models")

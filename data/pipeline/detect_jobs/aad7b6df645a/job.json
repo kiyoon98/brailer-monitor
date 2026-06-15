@@ -1,0 +1,12 @@
+{
+  "job_id": "aad7b6df645a",
+  "video_name": "JJR-102283_stream04_260310_202016.mp4",
+  "created_at": "2026-06-15T02:35:39.789943+00:00",
+  "status": "completed",
+  "progress": 1.0,
+  "processed_frames": 450,
+  "total_frames": 450,
+  "frames_with_detections": 16,
+  "manifest_path": "/home/koast/Documents/brailer-monitor/data/pipeline/detect_jobs/aad7b6df645a/detections.json",
+  "error": null
+}

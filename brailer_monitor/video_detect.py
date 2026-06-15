@@ -17,6 +17,10 @@ from .detector import BrailerDetector, Detection
 logger = logging.getLogger(__name__)
 
 
+class DetectionCancelled(Exception):
+    """Raised when the user stops an in-progress video detection job."""
+
+
 @dataclass
 class FrameDetection:
     frame_index: int
@@ -56,13 +60,30 @@ def _draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarr
     return vis
 
 
-def _detection_to_dict(det: Detection) -> dict[str, Any]:
+def _detection_area_px(det: Detection, frame_w: int, frame_h: int) -> int:
+    if det.mask is not None:
+        mask = det.mask
+        if mask.ndim == 3:
+            mask = mask[0]
+        if mask.shape[0] != frame_h or mask.shape[1] != frame_w:
+            mask = cv2.resize(
+                mask.astype(np.float32),
+                (frame_w, frame_h),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        return int(np.count_nonzero(mask > 0.5))
+    x1, y1, x2, y2 = det.bbox_xyxy
+    return int(max(0.0, x2 - x1) * max(0.0, y2 - y1))
+
+
+def _detection_to_dict(det: Detection, frame_w: int, frame_h: int) -> dict[str, Any]:
     return {
         "class_id": det.class_id,
         "class_name": det.class_name,
         "confidence": round(det.confidence, 4),
         "bbox_xyxy": [round(v, 1) for v in det.bbox_xyxy],
         "track_id": det.track_id,
+        "area_px": _detection_area_px(det, frame_w, frame_h),
     }
 
 
@@ -78,6 +99,7 @@ def detect_video(
     max_frames: int | None = None,
     save_previews: bool = True,
     on_progress: Callable[[int, int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Detect objects in each sampled frame; save manifest + preview images."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +134,9 @@ def detect_video(
     if on_progress is not None:
         on_progress(0, total_planned, 0)
 
+    if should_cancel and should_cancel():
+        raise DetectionCancelled("Detection cancelled by user")
+
     detector = BrailerDetector(
         model_path=model_path,
         confidence_threshold=confidence,
@@ -120,13 +145,16 @@ def detect_video(
     )
 
     while frame_index < total_frames:
+        if should_cancel and should_cancel():
+            raise DetectionCancelled("Detection cancelled by user")
+
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
         ok, frame = cap.read()
         if not ok:
             break
 
         detections = detector.predict(frame)
-        det_dicts = [_detection_to_dict(d) for d in detections]
+        det_dicts = [_detection_to_dict(d, width, height) for d in detections]
         preview_name: str | None = None
 
         if save_previews and detections:

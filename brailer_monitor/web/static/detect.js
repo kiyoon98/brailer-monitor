@@ -7,14 +7,27 @@ const els = {
   epochs: document.getElementById("epochs"),
   batch: document.getElementById("batch"),
   trainBtn: document.getElementById("trainBtn"),
+  stopTrainBtn: document.getElementById("stopTrainBtn"),
   trainStatus: document.getElementById("trainStatus"),
   trainProgressWrap: document.getElementById("trainProgressWrap"),
   trainProgressBar: document.getElementById("trainProgressBar"),
   trainProgressText: document.getElementById("trainProgressText"),
   detectVideo: document.getElementById("detectVideo"),
+  detectUploadSection: document.getElementById("detectUploadSection"),
+  detectLakeSection: document.getElementById("detectLakeSection"),
+  lakeBaseUrl: document.getElementById("lakeBaseUrl"),
+  lakeStartMonth: document.getElementById("lakeStartMonth"),
+  lakeStartDay: document.getElementById("lakeStartDay"),
+  lakeStartHour: document.getElementById("lakeStartHour"),
+  lakeEndMonth: document.getElementById("lakeEndMonth"),
+  lakeEndDay: document.getElementById("lakeEndDay"),
+  lakeEndHour: document.getElementById("lakeEndHour"),
+  lakeDiscoverBtn: document.getElementById("lakeDiscoverBtn"),
+  lakeDiscoverStatus: document.getElementById("lakeDiscoverStatus"),
   frameStride: document.getElementById("frameStride"),
   confidence: document.getElementById("confidence"),
   detectBtn: document.getElementById("detectBtn"),
+  stopDetectBtn: document.getElementById("stopDetectBtn"),
   resetTimelineBtn: document.getElementById("resetTimelineBtn"),
   detectStatus: document.getElementById("detectStatus"),
   detectProgressWrap: document.getElementById("detectProgressWrap"),
@@ -22,7 +35,17 @@ const els = {
   detectProgressText: document.getElementById("detectProgressText"),
   frameResults: document.getElementById("frameResults"),
   frameCount: document.getElementById("frameCount"),
-  timelineSummary: document.getElementById("timelineSummary"),
+  timelineAxis: document.getElementById("timelineAxis"),
+  timelineViewport: document.getElementById("timelineViewport"),
+  timelineTrack: document.getElementById("timelineTrack"),
+  timelineTicks: document.getElementById("timelineTicks"),
+  timelineZoomIn: document.getElementById("timelineZoomIn"),
+  timelineZoomOut: document.getElementById("timelineZoomOut"),
+  timelineZoomReset: document.getElementById("timelineZoomReset"),
+  timelineZoomLabel: document.getElementById("timelineZoomLabel"),
+  timelineRangeStart: document.getElementById("timelineRangeStart"),
+  timelineRangeEnd: document.getElementById("timelineRangeEnd"),
+  timelineRail: document.getElementById("timelineRail"),
   detectFrameMore: document.getElementById("detectFrameMore"),
   importFramePanel: document.getElementById("importFramePanel"),
   importFrameToggle: document.getElementById("importFrameToggle"),
@@ -32,6 +55,7 @@ const els = {
   importFrameResults: document.getElementById("importFrameResults"),
   importFrameMore: document.getElementById("importFrameMore"),
   frameLightbox: document.getElementById("frameLightbox"),
+  frameLightboxGallery: document.getElementById("frameLightboxGallery"),
   frameLightboxImg: document.getElementById("frameLightboxImg"),
   frameLightboxMeta: document.getElementById("frameLightboxMeta"),
   frameLightboxClose: document.getElementById("frameLightboxClose"),
@@ -39,7 +63,10 @@ const els = {
 
 const POLL_MS = 500;
 const IMPORT_FRAME_LIMIT = 48;
-const DETECT_FRAME_LIMIT = 48;
+const DETECT_FRAME_LIMIT = 200;
+const TIMELINE_ZOOM_MIN = 1;
+const TIMELINE_ZOOM_MAX = 48;
+const TIMELINE_ZOOM_STEP = 1.35;
 
 let pollTimer = null;
 let handledDetectJobId = null;
@@ -48,12 +75,40 @@ let importFrameOffset = 0;
 let importFrameTotal = 0;
 let detectFrameOffset = 0;
 let detectFrameTotal = 0;
+let timelineRange = null;
+let timelineAxisSegments = [];
+let timelineZoom = 1;
+let detectSourceMode = "upload";
+let lakeVideosReady = 0;
 let detectFrameJobId = null;
 let lastPipelineState = null;
 let importFramesLoaded = false;
 let importPanelExpanded = false;
 let labelSummaryKey = "";
 let detectSession = 0;
+let detectStopRequested = false;
+
+function isDetectStopping(state = lastPipelineState) {
+  return state?.detect_status === "cancelling" || state?.detect_status === "cancelled";
+}
+
+function updateStopButtons(state = lastPipelineState) {
+  const trainRunning = state?.train_status === "running";
+  const detectRunning =
+    state?.detect_status === "running" || state?.detect_status === "cancelling";
+
+  els.stopTrainBtn?.classList.toggle("hidden", !trainRunning);
+  els.stopDetectBtn?.classList.toggle("hidden", !detectRunning);
+  if (els.stopDetectBtn) {
+    els.stopDetectBtn.disabled = state?.detect_status === "cancelling" || detectStopRequested;
+  }
+  if (trainRunning) {
+    els.trainBtn.disabled = true;
+  }
+  if (detectRunning) {
+    els.detectBtn.disabled = true;
+  }
+}
 
 async function api(path, options = {}) {
   const res = await fetch(path, options);
@@ -62,6 +117,99 @@ async function api(path, options = {}) {
     throw new Error(text || res.statusText);
   }
   return res.json();
+}
+
+function getDetectSourceMode() {
+  const selected = document.querySelector('input[name="detectSource"]:checked');
+  return selected?.value === "lake" ? "lake" : "upload";
+}
+
+function setDetectSourceMode(mode) {
+  detectSourceMode = mode === "lake" ? "lake" : "upload";
+  els.detectUploadSection?.classList.toggle("hidden", detectSourceMode === "lake");
+  els.detectLakeSection?.classList.toggle("hidden", detectSourceMode !== "lake");
+  updateDetectButtonState();
+}
+
+function readLakeRange() {
+  return {
+    start_month: Number(els.lakeStartMonth.value),
+    start_day: Number(els.lakeStartDay.value),
+    start_hour: Number(els.lakeStartHour.value),
+    end_month: Number(els.lakeEndMonth.value),
+    end_day: Number(els.lakeEndDay.value),
+    end_hour: Number(els.lakeEndHour.value),
+  };
+}
+
+function updateDetectButtonState() {
+  const trainDone = lastPipelineState?.train_status === "completed";
+  if (!trainDone) {
+    els.detectBtn.disabled = true;
+    return;
+  }
+  if (detectSourceMode === "lake") {
+    els.detectBtn.disabled = lakeVideosReady <= 0;
+    return;
+  }
+  els.detectBtn.disabled = !els.detectVideo.files?.length;
+}
+
+async function loadLakeConfig() {
+  try {
+    const config = await api("/api/pipeline/lake-videos/config");
+    if (els.lakeBaseUrl) {
+      els.lakeBaseUrl.textContent = `${config.base_url} · ${config.file_prefix}_YYMMDD_HHMM${config.minute_slots?.[0] ?? 0}16.mp4 형식`;
+    }
+  } catch (err) {
+    console.error("loadLakeConfig failed", err);
+  }
+}
+
+async function discoverLakeVideos() {
+  const range = readLakeRange();
+  setStatus(els.lakeDiscoverStatus, "영상 목록 확인 중...");
+  els.lakeDiscoverBtn.disabled = true;
+  try {
+    const result = await api("/api/pipeline/lake-videos/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...range, check_exists: true }),
+    });
+    lakeVideosReady = result.found_count || 0;
+    const preview = (result.videos || [])
+      .slice(0, 3)
+      .map((video) => video.filename)
+      .join(", ");
+    const suffix = result.found_count > 3 ? " ..." : "";
+    setStatus(
+      els.lakeDiscoverStatus,
+      `후보 ${result.candidate_count}개 중 ${result.found_count}개 확인됨${preview ? ` · ${preview}${suffix}` : ""}`,
+      lakeVideosReady > 0 ? "ok" : "error",
+    );
+    updateDetectButtonState();
+    return result;
+  } catch (err) {
+    lakeVideosReady = 0;
+    setStatus(els.lakeDiscoverStatus, err.message, "error");
+    updateDetectButtonState();
+    return null;
+  } finally {
+    els.lakeDiscoverBtn.disabled = false;
+  }
+}
+
+function startDetectPolling(result, batchTotal) {
+  const running = result.jobs?.find((job) => job.job_id) || result.job;
+  activeDetectJobId = running?.job_id || null;
+  lastPipelineState = {
+    ...(lastPipelineState || {}),
+    detect_status: "running",
+    detect_batch_total: result.batch_total ?? result.batch_size ?? batchTotal,
+    detect_batch_done: result.batch_done ?? 0,
+    detect_queue_pending: result.queue_pending ?? 0,
+  };
+  startPolling();
 }
 
 function fmtTime(sec) {
@@ -168,6 +316,11 @@ function appendImportFrameCards(frames) {
 }
 
 function handleFrameCardDblClick(event) {
+  const segmentRow = event.target.closest(".timeline-segment-row, .timeline-segment-marker");
+  if (segmentRow?.dataset.segmentId) {
+    openSegmentLightboxById(segmentRow.dataset.segmentId);
+    return;
+  }
   const card = event.target.closest(".frame-card");
   if (!card?.dataset.previewSrc) return;
   openFrameLightbox(card.dataset.previewSrc, card.dataset.frameTitle, card.dataset.frameObjects);
@@ -302,13 +455,19 @@ function renderPipelineState(state) {
       pct,
       `학습 중 epoch ${epoch}/${total} (${Math.round(pct * 100)}%)`,
     );
-    setStatus(els.trainStatus, state.train_progress || "학습 중...");
+    const progressLabel =
+      state.train_progress === "cancelling" ? "학습 중지 요청됨..." : state.train_progress || "학습 중...";
+    setStatus(els.trainStatus, progressLabel);
     els.trainBtn.disabled = true;
   } else if (state.train_status === "completed") {
     setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, 1, "학습 완료");
     setStatus(els.trainStatus, `학습 완료: ${state.train_weights}`, "ok");
     els.trainBtn.disabled = false;
-    els.detectBtn.disabled = false;
+    updateDetectButtonState();
+  } else if (state.train_status === "cancelled") {
+    setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, null);
+    setStatus(els.trainStatus, state.train_error || "학습이 중지되었습니다.", "error");
+    els.trainBtn.disabled = false;
   } else if (state.train_status === "error") {
     setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, null);
     setStatus(els.trainStatus, state.train_error, "error");
@@ -316,10 +475,48 @@ function renderPipelineState(state) {
   } else {
     setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, null);
   }
+
+  if (state.detect_status === "cancelled" || state.detect_status === "cancelling") {
+    activeDetectJobId = null;
+    setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+    const message =
+      state.detect_status === "cancelling"
+        ? "탐지 중지 중..."
+        : state.detect_error || "탐지가 중지되었습니다.";
+    setStatus(els.detectStatus, message, state.detect_status === "cancelled" ? "error" : "");
+    if (state.detect_status === "cancelled") {
+      detectStopRequested = false;
+      updateDetectButtonState();
+    }
+  }
+
+  updateStopButtons(state);
+}
+
+function formatConfidence(confidence) {
+  if (confidence == null || Number.isNaN(confidence)) return "-";
+  return `${(confidence * 100).toFixed(0)}%`;
+}
+
+function formatAreaPx(areaPx) {
+  const px = Number(areaPx) || 0;
+  if (px <= 0) return "0px";
+  if (px >= 1_000_000) return `${(px / 1_000_000).toFixed(2)}M px`;
+  if (px >= 10_000) return `${(px / 1000).toFixed(1)}k px`;
+  return `${px.toLocaleString()} px`;
+}
+
+function formatSegmentStats(segmentOrFrame) {
+  const conf = formatConfidence(segmentOrFrame.max_confidence ?? segmentOrFrame.confidence);
+  const area = formatAreaPx(segmentOrFrame.max_area_px ?? segmentOrFrame.area_px);
+  return `신뢰도 ${conf} · 면적 ${area}`;
 }
 
 function openFrameLightbox(imgSrc, titleHtml, objectsHtml) {
   if (!imgSrc || !els.frameLightbox) return;
+  els.frameLightboxGallery?.classList.add("hidden");
+  els.frameLightboxGallery.innerHTML = "";
+  els.frameLightboxImg.classList.remove("hidden");
   els.frameLightboxImg.src = imgSrc;
   els.frameLightboxMeta.innerHTML = `
     <div><strong>${titleHtml}</strong></div>
@@ -328,81 +525,271 @@ function openFrameLightbox(imgSrc, titleHtml, objectsHtml) {
   document.body.style.overflow = "hidden";
 }
 
+function previewUrl(jobId, previewPath) {
+  if (!jobId || !previewPath) return "";
+  return `/api/pipeline/detect/${jobId}/previews/${previewPath}`;
+}
+
+function openSegmentLightbox(segment, frames) {
+  if (!els.frameLightbox || !frames?.length) return;
+  els.frameLightboxImg.classList.add("hidden");
+  els.frameLightboxImg.removeAttribute("src");
+  const gallery = els.frameLightboxGallery;
+  gallery.innerHTML = frames
+    .map((frame) => {
+      const src = previewUrl(frame.job_id, frame.preview_path);
+      const time = frame.absolute_time_label || fmtTime(frame.timestamp_sec);
+      const stats = formatSegmentStats(frame);
+      return `
+        <div class="lightbox-gallery-item">
+          <img src="${src}" alt="" loading="lazy" />
+          <div class="caption">${time} · ${stats}</div>
+        </div>`;
+    })
+    .join("");
+  gallery.classList.remove("hidden");
+  const range =
+    segment.time_label ||
+    `${segment.start_absolute_time_label || ""} – ${segment.end_absolute_time_label || ""}`;
+  els.frameLightboxMeta.innerHTML = `
+    <div><strong>${segment.class_name}</strong> · ${range}</div>
+    <div class="objects">${segment.video_name} · ${frames.length}프레임 · ${formatSegmentStats(segment)}</div>`;
+  els.frameLightbox.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+}
+
+async function openSegmentLightboxById(segmentId, segmentSummary) {
+  try {
+    const { segment, frames } = await api(`/api/pipeline/detect/timeline/segment/${encodeURIComponent(segmentId)}`);
+    openSegmentLightbox(segment || segmentSummary, frames);
+  } catch (err) {
+    console.error("openSegmentLightboxById failed", err);
+    alert(err.message || "세그먼트를 불러오지 못했습니다.");
+  }
+}
+
 function closeFrameLightbox() {
   if (!els.frameLightbox) return;
   els.frameLightbox.classList.add("hidden");
+  els.frameLightboxImg.classList.remove("hidden");
   els.frameLightboxImg.removeAttribute("src");
+  if (els.frameLightboxGallery) {
+    els.frameLightboxGallery.classList.add("hidden");
+    els.frameLightboxGallery.innerHTML = "";
+  }
   document.body.style.overflow = "";
 }
 
-function renderTimelineSummary(videos) {
-  if (!els.timelineSummary) return;
-  if (!videos?.length) {
-    els.timelineSummary.innerHTML = "";
-    return;
-  }
-  els.timelineSummary.innerHTML = videos
-    .map((video) => {
-      const start = video.video_start ? video.video_start.replace("T", " ").slice(0, 16) : "시간 미상";
-      return `<span class="timeline-chip">${video.video_name} · ${start} · ${video.frames_with_detections}건</span>`;
-    })
-    .join("");
+function clampTimelineZoom(value) {
+  return Math.min(TIMELINE_ZOOM_MAX, Math.max(TIMELINE_ZOOM_MIN, value));
 }
 
-function appendTimelineCards(events) {
-  for (const event of events) {
-    const card = document.createElement("div");
-    card.className = "frame-card";
-    card.title = "더블클릭하여 크게 보기";
-    const objects = (event.detections || [])
-      .map((d) => `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`)
-      .join("<br>");
-    const absTime = event.absolute_time_label || fmtTime(event.timestamp_sec);
-    const imgSrc = event.preview_path
-      ? `/api/pipeline/detect/${event.job_id}/previews/${event.preview_path}`
-      : "";
-    const img = imgSrc ? `<img src="${imgSrc}" alt="" loading="lazy" />` : "";
-    const title = `${absTime} · frame #${event.frame_index}`;
-    card.innerHTML = `
+function getTimelineViewportWidth() {
+  const width = els.timelineViewport?.clientWidth || 0;
+  return Math.max(width, 320);
+}
+
+function getTimelineTrackWidth() {
+  return Math.round(getTimelineViewportWidth() * timelineZoom);
+}
+
+function setTimelineZoom(nextZoom, { keepCenter = true } = {}) {
+  const viewport = els.timelineViewport;
+  const prevWidth = getTimelineTrackWidth();
+  const centerRatio =
+    viewport && prevWidth > 0
+      ? (viewport.scrollLeft + viewport.clientWidth / 2) / prevWidth
+      : 0.5;
+
+  timelineZoom = clampTimelineZoom(nextZoom);
+  renderTimelineAxis(timelineRange, timelineAxisSegments);
+
+  if (viewport && keepCenter) {
+    const nextWidth = getTimelineTrackWidth();
+    viewport.scrollLeft = Math.max(0, centerRatio * nextWidth - viewport.clientWidth / 2);
+  }
+}
+
+function updateTimelineZoomLabel() {
+  if (els.timelineZoomLabel) {
+    els.timelineZoomLabel.textContent = `${Math.round(timelineZoom * 100)}%`;
+  }
+}
+
+function segmentPositionPx(segment, range, trackWidthPx) {
+  if (!range?.range_start || !range?.range_end) {
+    return { left: trackWidthPx * 0.5, width: 24 };
+  }
+  const startMs = new Date(segment.start_absolute_time || range.range_start).getTime();
+  const endMs = new Date(segment.end_absolute_time || segment.start_absolute_time || range.range_end).getTime();
+  const rangeStartMs = new Date(range.range_start).getTime();
+  const rangeEndMs = new Date(range.range_end).getTime();
+  const total = Math.max(rangeEndMs - rangeStartMs, 1);
+  const left = ((startMs - rangeStartMs) / total) * trackWidthPx;
+  const span = Math.max(((endMs - startMs) / total) * trackWidthPx, 10 * timelineZoom);
+  const minWidth = Math.max(14, 8 * timelineZoom);
+  return {
+    left: Math.max(0, Math.min(left, trackWidthPx - minWidth)),
+    width: Math.max(span, minWidth),
+  };
+}
+
+function renderTimelineTicks(range, trackWidthPx) {
+  if (!els.timelineTicks || !range?.range_start || !range?.range_end) {
+    if (els.timelineTicks) els.timelineTicks.innerHTML = "";
+    return;
+  }
+  const startMs = new Date(range.range_start).getTime();
+  const endMs = new Date(range.range_end).getTime();
+  const total = Math.max(endMs - startMs, 1);
+  const hourMs = 3600000;
+  const minPxBetweenTicks = 70;
+  let stepHours = 1;
+  while ((hourMs * stepHours / total) * trackWidthPx < minPxBetweenTicks) {
+    stepHours *= 2;
+    if (stepHours > 168) break;
+  }
+
+  const ticks = [];
+  let tickMs = Math.ceil(startMs / hourMs) * hourMs;
+  while (tickMs <= endMs) {
+    const left = ((tickMs - startMs) / total) * trackWidthPx;
+    const label = new Date(tickMs).toLocaleString("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    ticks.push(`<div class="timeline-tick" style="left:${left}px"><span>${label}</span></div>`);
+    tickMs += hourMs * stepHours;
+  }
+  els.timelineTicks.style.width = `${trackWidthPx}px`;
+  els.timelineTicks.innerHTML = ticks.join("");
+}
+
+function renderTimelineAxis(range, segments) {
+  if (!els.timelineAxis || !els.timelineRail || !els.timelineTrack) return;
+  timelineAxisSegments = segments || timelineAxisSegments;
+  if (!range?.range_start || !timelineAxisSegments.length) {
+    els.timelineAxis.classList.add("hidden");
+    els.timelineRail.innerHTML = "";
+    if (els.timelineTicks) els.timelineTicks.innerHTML = "";
+    return;
+  }
+
+  timelineRange = range;
+  const trackWidthPx = getTimelineTrackWidth();
+  els.timelineAxis.classList.remove("hidden");
+  if (els.timelineRangeStart) els.timelineRangeStart.textContent = range.range_start_label || "";
+  if (els.timelineRangeEnd) els.timelineRangeEnd.textContent = range.range_end_label || "";
+
+  els.timelineTrack.style.width = `${trackWidthPx}px`;
+  els.timelineRail.style.width = `${trackWidthPx}px`;
+  els.timelineRail.style.height = `${Math.round(56 + Math.min(timelineZoom, 8) * 3)}px`;
+
+  renderTimelineTicks(range, trackWidthPx);
+  els.timelineRail.innerHTML = timelineAxisSegments
+    .map((segment) => {
+      const pos = segmentPositionPx(segment, range, trackWidthPx);
+      const src = previewUrl(segment.preview_job_id || segment.job_id, segment.preview_path);
+      const img = src ? `<img src="${src}" alt="" loading="lazy" />` : "";
+      const frames = segment.frame_count > 1 ? `${segment.frame_count}프` : "";
+      const showImg = timelineZoom >= 1.5 || pos.width >= 36;
+      return `
+        <div
+          class="timeline-segment-marker"
+          style="left:${pos.left}px;width:${pos.width}px;"
+          data-segment-id="${segment.segment_id}"
+          title="${segment.class_name} · ${segment.time_label || ""} · ${formatSegmentStats(segment)}"
+        >
+          <span class="marker-bar"></span>
+          ${showImg ? img : ""}
+          <span class="marker-label">${segment.class_name}${frames ? ` ${frames}` : ""}</span>
+        </div>`;
+    })
+    .join("");
+  updateTimelineZoomLabel();
+}
+
+async function fetchAllTimelineSegments() {
+  const allSegments = [];
+  let offset = 0;
+  while (true) {
+    const { timeline } = await api(
+      `/api/pipeline/detect/timeline?offset=${offset}&limit=${DETECT_FRAME_LIMIT}`,
+    );
+    allSegments.push(...(timeline.segments || []));
+    const fetched = timeline.segments?.length || 0;
+    if (fetched === 0 || offset + fetched >= (timeline.total || 0)) {
+      return { timeline, allSegments };
+    }
+    offset += fetched;
+  }
+}
+
+function appendTimelineSegments(segments) {
+  for (const segment of segments) {
+    const row = document.createElement("div");
+    row.className = "timeline-segment-row";
+    row.title = "더블클릭하여 탐지 프레임 전체 보기";
+    const src = previewUrl(segment.preview_job_id || segment.job_id, segment.preview_path);
+    const img = src ? `<img src="${src}" alt="" loading="lazy" />` : "";
+    const frames =
+      segment.frame_count > 1 ? `${segment.frame_count}프레임` : "1프레임";
+    row.innerHTML = `
       ${img}
       <div class="meta">
-        <div class="abs-time"><strong>${absTime}</strong></div>
-        <div>${event.video_name} · frame #${event.frame_index}</div>
-        <div class="objects">${objects || "(없음)"}</div>
+        <div class="time"><strong>${segment.class_name}</strong> · ${segment.time_label || "-"}</div>
+        <div class="detail">${segment.video_name} · ${frames} · ${formatSegmentStats(segment)}</div>
       </div>`;
-    card.dataset.previewSrc = imgSrc;
-    card.dataset.frameTitle = `${absTime} · ${event.video_name} · frame #${event.frame_index}`;
-    card.dataset.frameObjects = objects;
-    els.frameResults.appendChild(card);
+    row.dataset.segmentId = segment.segment_id;
+    els.frameResults.appendChild(row);
   }
 }
 
 async function loadTimeline({ reset = true } = {}) {
-  const offset = reset ? 0 : detectFrameOffset;
   try {
-    const { timeline } = await api(
-      `/api/pipeline/detect/timeline?offset=${offset}&limit=${DETECT_FRAME_LIMIT}`,
-    );
     if (reset) {
       els.frameResults.innerHTML = "";
       detectFrameOffset = 0;
+      timelineZoom = 1;
+      const { timeline, allSegments } = await fetchAllTimelineSegments();
+      timelineRange = {
+        range_start: timeline.range_start,
+        range_end: timeline.range_end,
+        range_start_label: timeline.range_start_label,
+        range_end_label: timeline.range_end_label,
+      };
+      timelineAxisSegments = timeline.axis_segments || allSegments;
+      detectFrameTotal = timeline.total || 0;
+      if (els.frameCount) els.frameCount.textContent = detectFrameTotal;
+      renderTimelineAxis(timelineRange, timelineAxisSegments);
+      appendTimelineSegments(allSegments);
+      detectFrameOffset = allSegments.length;
+      els.detectFrameMore?.classList.add("hidden");
+      if (timeline.videos?.length) {
+        handledDetectJobId = timeline.videos[timeline.videos.length - 1].job_id;
+      }
+      return timeline;
     }
+
+    const offset = detectFrameOffset;
+    const { timeline } = await api(
+      `/api/pipeline/detect/timeline?offset=${offset}&limit=${DETECT_FRAME_LIMIT}`,
+    );
     detectFrameTotal = timeline.total || 0;
     if (els.frameCount) els.frameCount.textContent = detectFrameTotal;
-    renderTimelineSummary(timeline.videos || []);
-    appendTimelineCards(timeline.events || []);
-    detectFrameOffset += (timeline.events || []).length;
+    appendTimelineSegments(timeline.segments || []);
+    detectFrameOffset += (timeline.segments || []).length;
     els.detectFrameMore?.classList.toggle("hidden", detectFrameOffset >= detectFrameTotal);
-    if (timeline.videos?.length) {
-      handledDetectJobId = timeline.videos[timeline.videos.length - 1].job_id;
-    }
     return timeline;
   } catch (err) {
     console.error("loadTimeline failed", err);
     if (reset) {
       els.frameResults.innerHTML = "";
       if (els.frameCount) els.frameCount.textContent = "0";
-      renderTimelineSummary([]);
+      els.timelineAxis?.classList.add("hidden");
     }
     return null;
   }
@@ -415,9 +802,14 @@ async function resetTimeline() {
   detectFrameTotal = 0;
   detectFrameJobId = null;
   handledDetectJobId = null;
+  timelineRange = null;
+  timelineAxisSegments = [];
+  timelineZoom = 1;
   els.frameResults.innerHTML = "";
   if (els.frameCount) els.frameCount.textContent = "0";
-  renderTimelineSummary([]);
+  els.timelineAxis?.classList.add("hidden");
+  if (els.timelineRail) els.timelineRail.innerHTML = "";
+  if (els.timelineTicks) els.timelineTicks.innerHTML = "";
   els.detectFrameMore?.classList.add("hidden");
   setStatus(els.detectStatus, "탐지 결과가 초기화되었습니다.", "ok");
 }
@@ -431,10 +823,27 @@ async function finalizeDetectJob(job) {
 
 async function updateDetectUI(jobId) {
   if (!jobId) return null;
+  if (isDetectStopping()) {
+    setStatus(els.detectStatus, "탐지 중지 중...");
+    return "cancelling";
+  }
   try {
     const { job } = await api(`/api/pipeline/detect/${jobId}`);
 
+    if (job.status === "cancelled") {
+      activeDetectJobId = null;
+      detectStopRequested = false;
+      setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+      setStatus(els.detectStatus, job.error || "탐지가 중지되었습니다.", "error");
+      updateDetectButtonState();
+      return "done";
+    }
+
     if (job.status === "running") {
+      if (isDetectStopping()) {
+        setStatus(els.detectStatus, "탐지 중지 중...");
+        return "cancelling";
+      }
       showDetectProgress(
         job.processed_frames || 0,
         job.total_frames || 0,
@@ -446,6 +855,10 @@ async function updateDetectUI(jobId) {
     }
 
     if (job.status === "completed") {
+      if (isDetectStopping()) {
+        setStatus(els.detectStatus, "탐지 중지 중...");
+        return "cancelling";
+      }
       const queuePending = lastPipelineState?.detect_queue_pending > 0;
       const batchActive =
         lastPipelineState?.detect_batch_total > 1 &&
@@ -484,6 +897,19 @@ async function poll() {
     }
     renderPipelineState(state);
 
+    if (state.train_status === "cancelled" || state.detect_status === "cancelled") {
+      activeDetectJobId = null;
+      detectStopRequested = false;
+      updateDetectButtonState();
+      stopPolling();
+      return;
+    }
+
+    if (state.detect_status === "cancelling") {
+      updateStopButtons(state);
+      return;
+    }
+
     const trainRunning = state.train_status === "running";
     if (trainRunning) {
       return;
@@ -491,10 +917,11 @@ async function poll() {
 
     const jobId = activeDetectJobId || state.detect_job_id;
     const batchRunning =
-      state.detect_status === "running" ||
-      (state.detect_queue_pending || 0) > 0 ||
-      ((state.detect_batch_total || 0) > (state.detect_batch_done || 0) &&
-        state.detect_status !== "error");
+      !isDetectStopping(state) &&
+      (state.detect_status === "running" ||
+        (state.detect_queue_pending || 0) > 0 ||
+        ((state.detect_batch_total || 0) > (state.detect_batch_done || 0) &&
+          state.detect_status !== "error"));
     const needsDetectUI =
       !!activeDetectJobId ||
       batchRunning ||
@@ -568,7 +995,35 @@ els.detectFrameMore.addEventListener("click", () => {
 els.resetTimelineBtn?.addEventListener("click", resetTimeline);
 
 els.frameResults.addEventListener("dblclick", handleFrameCardDblClick);
+els.timelineViewport?.addEventListener("dblclick", handleFrameCardDblClick);
 els.importFrameResults.addEventListener("dblclick", handleFrameCardDblClick);
+
+els.timelineZoomIn?.addEventListener("click", () => {
+  setTimelineZoom(timelineZoom * TIMELINE_ZOOM_STEP);
+});
+els.timelineZoomOut?.addEventListener("click", () => {
+  setTimelineZoom(timelineZoom / TIMELINE_ZOOM_STEP);
+});
+els.timelineZoomReset?.addEventListener("click", () => {
+  timelineZoom = 1;
+  renderTimelineAxis(timelineRange, timelineAxisSegments);
+  if (els.timelineViewport) els.timelineViewport.scrollLeft = 0;
+});
+els.timelineViewport?.addEventListener(
+  "wheel",
+  (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const factor = event.deltaY > 0 ? 1 / TIMELINE_ZOOM_STEP : TIMELINE_ZOOM_STEP;
+    setTimelineZoom(timelineZoom * factor);
+  },
+  { passive: false },
+);
+window.addEventListener("resize", () => {
+  if (timelineAxisSegments.length) {
+    renderTimelineAxis(timelineRange, timelineAxisSegments);
+  }
+});
 
 els.frameLightboxClose?.addEventListener("click", closeFrameLightbox);
 els.frameLightbox?.addEventListener("click", (event) => {
@@ -621,6 +1076,7 @@ els.trainBtn.addEventListener("click", async () => {
         batch: Number(els.batch.value),
       }),
     });
+    updateStopButtons({ train_status: "running" });
     startPolling();
   } catch (err) {
     setStatus(els.trainStatus, err.message, "error");
@@ -628,9 +1084,121 @@ els.trainBtn.addEventListener("click", async () => {
   }
 });
 
+els.stopTrainBtn?.addEventListener("click", async () => {
+  els.stopTrainBtn.disabled = true;
+  setStatus(els.trainStatus, "학습 중지 요청...");
+  try {
+    await api("/api/pipeline/train/stop", { method: "POST" });
+    startPolling();
+  } catch (err) {
+    setStatus(els.trainStatus, err.message, "error");
+  } finally {
+    els.stopTrainBtn.disabled = false;
+  }
+});
+
+els.stopDetectBtn?.addEventListener("click", async () => {
+  if (detectStopRequested || isDetectStopping()) {
+    return;
+  }
+  detectStopRequested = true;
+  els.stopDetectBtn.disabled = true;
+  setStatus(els.detectStatus, "탐지 중지 요청...");
+  try {
+    const result = await api("/api/pipeline/detect/stop", { method: "POST" });
+    if (!result.cancelled) {
+      detectStopRequested = false;
+      if (lastPipelineState?.detect_status === "cancelled") {
+        setStatus(els.detectStatus, "이미 중지되었습니다.", "error");
+      }
+      updateStopButtons();
+      return;
+    }
+    lastPipelineState = {
+      ...(lastPipelineState || {}),
+      detect_status: "cancelling",
+      detect_queue_pending: 0,
+      detect_error: "중지 요청됨",
+    };
+    updateStopButtons(lastPipelineState);
+    if (!pollTimer) {
+      startPolling();
+    }
+  } catch (err) {
+    detectStopRequested = false;
+    setStatus(els.detectStatus, err.message, "error");
+    updateStopButtons();
+  }
+});
+
+els.lakeDiscoverBtn?.addEventListener("click", discoverLakeVideos);
+
+document.querySelectorAll('input[name="detectSource"]').forEach((input) => {
+  input.addEventListener("change", () => {
+    lakeVideosReady = 0;
+    setDetectSourceMode(getDetectSourceMode());
+    if (detectSourceMode === "lake") {
+      setStatus(els.lakeDiscoverStatus, "");
+    }
+  });
+});
+
+els.detectVideo?.addEventListener("change", updateDetectButtonState);
+
 els.detectBtn.addEventListener("click", async () => {
+  detectSourceMode = getDetectSourceMode();
+  els.detectBtn.disabled = true;
+  detectSession += 1;
+  handledDetectJobId = null;
+  detectStopRequested = false;
+
+  if (detectSourceMode === "lake") {
+    if (lakeVideosReady <= 0) {
+      const discovered = await discoverLakeVideos();
+      if (!discovered?.found_count) {
+        els.detectBtn.disabled = false;
+        return;
+      }
+    }
+    const range = readLakeRange();
+    const batchTotal = lakeVideosReady;
+    setStatus(els.detectStatus, `${batchTotal}개 Lake 비디오 탐지 시작...`);
+    lastPipelineState = {
+      ...(lastPipelineState || {}),
+      detect_status: "running",
+      detect_batch_total: batchTotal,
+      detect_batch_done: 0,
+      detect_queue_pending: Math.max(0, batchTotal - 1),
+    };
+    showDetectProgress(0, 0, 0, 0, lastPipelineState);
+    try {
+      const result = await api("/api/pipeline/detect/lake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...range,
+          frame_stride: Number(els.frameStride.value),
+          confidence: Number(els.confidence.value),
+          check_exists: true,
+        }),
+      });
+      startDetectPolling(result, batchTotal);
+    updateStopButtons({ detect_status: "running", detect_batch_total: batchTotal });
+    } catch (err) {
+      activeDetectJobId = null;
+      setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+      setStatus(els.detectStatus, err.message, "error");
+      updateDetectButtonState();
+    }
+    return;
+  }
+
   const files = els.detectVideo.files;
-  if (!files.length) return alert("비디오 파일을 하나 이상 선택하세요.");
+  if (!files.length) {
+    alert("비디오 파일을 하나 이상 선택하세요.");
+    els.detectBtn.disabled = false;
+    return;
+  }
   const form = new FormData();
   for (const file of files) {
     form.append("files", file);
@@ -638,20 +1206,23 @@ els.detectBtn.addEventListener("click", async () => {
   form.append("frame_stride", els.frameStride.value);
   form.append("confidence", els.confidence.value);
   setStatus(els.detectStatus, `${files.length}개 비디오 탐지 시작...`);
-  els.detectBtn.disabled = true;
-  detectSession += 1;
-  handledDetectJobId = null;
-  showDetectProgress(0, 0, 0, 0);
+  lastPipelineState = {
+    ...(lastPipelineState || {}),
+    detect_status: "running",
+    detect_batch_total: files.length,
+    detect_batch_done: 0,
+    detect_queue_pending: Math.max(0, files.length - 1),
+  };
+  showDetectProgress(0, 0, 0, 0, lastPipelineState);
   try {
     const result = await api("/api/pipeline/detect", { method: "POST", body: form });
-    const running = result.jobs?.find((job) => job.job_id) || result.job;
-    activeDetectJobId = running?.job_id || null;
-    startPolling();
+    startDetectPolling(result, files.length);
+    updateStopButtons({ detect_status: "running", detect_batch_total: files.length });
   } catch (err) {
     activeDetectJobId = null;
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
     setStatus(els.detectStatus, err.message, "error");
-    els.detectBtn.disabled = false;
+    updateDetectButtonState();
   }
 });
 
@@ -679,7 +1250,10 @@ api("/api/pipeline/state")
     }
     renderPipelineState(state);
     lastPipelineState = state;
-    const timelineCount = state.detect_timeline?.event_count ?? state.detect_timeline_events ?? 0;
+    const timelineCount =
+      state.detect_timeline?.segment_count ??
+      state.detect_timeline_events ??
+      0;
     if (timelineCount > 0) {
       loadTimeline({ reset: true });
     } else if (state.detect_status === "completed" && state.detect_job_id) {
@@ -693,3 +1267,6 @@ api("/api/pipeline/state")
     }
   })
   .catch(console.error);
+
+setDetectSourceMode("upload");
+loadLakeConfig();
