@@ -423,6 +423,7 @@ def cmd_web(args: argparse.Namespace) -> int:
         host=args.host,
         port=args.port,
         reload=args.reload,
+        workers=1,
     )
     return 0
 

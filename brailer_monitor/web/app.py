@@ -183,35 +183,62 @@ async def pipeline_train(body: TrainRequest) -> dict:
 
 @app.post("/api/pipeline/detect")
 async def pipeline_detect(
-    file: UploadFile = File(...),
+    files: list[UploadFile] = File(...),
     frame_stride: int = Form(5),
     confidence: float = Form(0.35),
     device: str | int = Form(0),
 ) -> dict:
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename")
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in {".mp4", ".avi", ".mov", ".mkv"}:
-        raise HTTPException(status_code=400, detail="Unsupported video format")
+    if not files:
+        raise HTTPException(status_code=400, detail="No video files")
 
     temp = PIPELINE_ROOT / "_uploads"
     temp.mkdir(parents=True, exist_ok=True)
-    temp_path = temp / file.filename
-    with temp_path.open("wb") as handle:
-        shutil.copyfileobj(file.file, handle)
+    saved: list[tuple[Path, str]] = []
+
     try:
-        job = pipeline.start_detection(
-            temp_path,
-            file.filename,
+        for upload in files:
+            if not upload.filename:
+                continue
+            suffix = Path(upload.filename).suffix.lower()
+            if suffix not in {".mp4", ".avi", ".mov", ".mkv"}:
+                raise HTTPException(status_code=400, detail=f"Unsupported format: {upload.filename}")
+            temp_path = temp / upload.filename
+            with temp_path.open("wb") as handle:
+                shutil.copyfileobj(upload.file, handle)
+            saved.append((temp_path, upload.filename))
+
+        if not saved:
+            raise HTTPException(status_code=400, detail="No valid video files")
+
+        return pipeline.start_detection_batch(
+            saved,
             frame_stride=frame_stride,
             confidence=confidence,
             device=device,
         )
-        return {"job": job.to_dict()}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     finally:
-        temp_path.unlink(missing_ok=True)
+        for temp_path, _ in saved:
+            temp_path.unlink(missing_ok=True)
+
+
+@app.get("/api/pipeline/detect/timeline")
+async def pipeline_detect_timeline(offset: int = 0, limit: int = 60) -> dict:
+    return {"timeline": pipeline.get_timeline(offset=offset, limit=limit)}
+
+
+@app.get("/api/pipeline/detect/timeline/segment/{segment_id}")
+async def pipeline_detect_timeline_segment(segment_id: str) -> dict:
+    try:
+        return pipeline.get_timeline_segment(segment_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/pipeline/detect/timeline/reset")
+async def pipeline_detect_timeline_reset() -> dict:
+    return {"timeline": pipeline.reset_timeline()}
 
 
 @app.get("/api/pipeline/detect/{job_id}")
@@ -223,9 +250,21 @@ async def pipeline_get_detect_job(job_id: str) -> dict:
 
 
 @app.get("/api/pipeline/detect/{job_id}/results")
-async def pipeline_detect_results(job_id: str) -> dict:
+async def pipeline_detect_results(
+    job_id: str,
+    detections_only: bool = False,
+    offset: int = 0,
+    limit: int | None = None,
+) -> dict:
     try:
-        return {"manifest": pipeline.get_detection_manifest(job_id)}
+        return {
+            "manifest": pipeline.get_detection_manifest(
+                job_id,
+                detections_only=detections_only,
+                offset=offset,
+                limit=limit,
+            )
+        }
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

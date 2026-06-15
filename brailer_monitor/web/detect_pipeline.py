@@ -13,8 +13,16 @@ from pathlib import Path
 from typing import Any
 
 from ..cvat_import import import_cvat
+from ..detect_timeline import (
+    get_segment_frames,
+    list_timeline,
+    merge_job_manifest,
+    reset_timeline,
+    timeline_summary,
+)
 from ..train import load_task_type, run_training
 from ..video_detect import detect_video
+from ..video_time import parse_video_start_time
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +49,10 @@ class PipelineState:
     detect_processed_frames: int = 0
     detect_total_frames: int = 0
     detect_frames_with_objects: int = 0
+    detect_queue_pending: int = 0
+    detect_batch_total: int = 0
+    detect_batch_done: int = 0
+    detect_timeline_events: int = 0
     detect_error: str | None = None
     updated_at: str = ""
 
@@ -75,6 +87,10 @@ class DetectPipelineManager:
         self._lock = threading.Lock()
         self._train_thread: threading.Thread | None = None
         self._detect_threads: dict[str, threading.Thread] = {}
+        self._timeline_path = self.root / "detect_timeline.json"
+        self._detect_queue: list[dict[str, Any]] = []
+        self._batch_total = 0
+        self._batch_done = 0
 
     def _load_state(self) -> PipelineState:
         if not self._state_path.exists():
@@ -96,7 +112,21 @@ class DetectPipelineManager:
         meta_path = self.dataset_root / "import_meta.json"
         if meta_path.exists():
             payload["dataset_meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
+        payload["detect_timeline"] = timeline_summary(self._timeline_path)
         return payload
+
+    def get_timeline(self, *, offset: int = 0, limit: int = 60) -> dict[str, Any]:
+        return list_timeline(self._timeline_path, offset=offset, limit=limit)
+
+    def get_timeline_segment(self, segment_id: str) -> dict[str, Any]:
+        return get_segment_frames(self._timeline_path, segment_id)
+
+    def reset_timeline(self) -> dict[str, Any]:
+        reset_timeline(self._timeline_path)
+        state = self._load_state()
+        state.detect_timeline_events = 0
+        self._save_state(state)
+        return timeline_summary(self._timeline_path)
 
     def import_cvat(
         self,
@@ -131,6 +161,9 @@ class DetectPipelineManager:
             self._save_state(state)
             raise
 
+    def _train_thread_alive(self) -> bool:
+        return self._train_thread is not None and self._train_thread.is_alive()
+
     def start_training(
         self,
         *,
@@ -141,7 +174,12 @@ class DetectPipelineManager:
     ) -> dict[str, Any]:
         state = self._load_state()
         if state.train_status == "running":
-            raise RuntimeError("Training already running")
+            if self._train_thread_alive():
+                raise RuntimeError("Training already running")
+            logger.warning("Recovering stale train_status=running (thread not alive)")
+            state.train_status = "idle"
+            state.train_progress = None
+            self._save_state(state)
         if not (self.config_dir / "dataset.yaml").exists():
             raise FileNotFoundError("dataset.yaml not found. Import CVAT zip first.")
 
@@ -212,7 +250,38 @@ class DetectPipelineManager:
         frame_stride: int = 5,
         confidence: float = 0.35,
         device: str | int = 0,
-    ) -> DetectJob:
+    ) -> DetectJob | dict[str, Any]:
+        return self.start_detection_batch(
+            [(video_path, video_name)],
+            model_path=model_path,
+            frame_stride=frame_stride,
+            confidence=confidence,
+            device=device,
+        )
+
+    def _stage_batch_videos(self, videos: list[tuple[Path, str]]) -> list[dict[str, Any]]:
+        """Copy uploads to persistent staging before API temp files are removed."""
+        staging_root = self.root / "_detect_staging" / uuid.uuid4().hex[:12]
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staged: list[dict[str, Any]] = []
+        for index, (video_path, video_name) in enumerate(videos):
+            staged_path = staging_root / f"{index:03d}_{Path(video_name).name}"
+            shutil.copy2(video_path, staged_path)
+            staged.append({"video_path": staged_path, "video_name": video_name})
+        return staged
+
+    def start_detection_batch(
+        self,
+        videos: list[tuple[Path, str]],
+        *,
+        model_path: Path | None = None,
+        frame_stride: int = 5,
+        confidence: float = 0.35,
+        device: str | int = 0,
+    ) -> dict[str, Any]:
+        if not videos:
+            raise ValueError("No videos provided")
+
         state = self._load_state()
         if model_path is None:
             task = load_task_type(self.dataset_root)
@@ -221,12 +290,66 @@ class DetectPipelineManager:
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}. Train first.")
 
+        staged_videos = self._stage_batch_videos(videos)
+        queued_jobs: list[dict[str, Any]] = []
+        with self._lock:
+            state = self._load_state()
+            running = state.detect_status == "running"
+
+            if not running:
+                self._batch_total = len(staged_videos)
+                self._batch_done = 0
+                state.detect_batch_total = self._batch_total
+                state.detect_batch_done = 0
+            else:
+                self._batch_total += len(staged_videos)
+                state.detect_batch_total = self._batch_total
+
+            for index, staged in enumerate(staged_videos):
+                item = {
+                    "video_path": staged["video_path"],
+                    "video_name": staged["video_name"],
+                    "model_path": model_path,
+                    "frame_stride": frame_stride,
+                    "confidence": confidence,
+                    "device": device,
+                }
+                if not running and index == 0:
+                    job = self._launch_detection(item)
+                    queued_jobs.append({"job_id": job.job_id, "video_name": staged["video_name"], "status": "running"})
+                    running = True
+                else:
+                    self._detect_queue.append(item)
+                    queued_jobs.append({"video_name": staged["video_name"], "status": "queued"})
+
+            state = self._load_state()
+            state.detect_queue_pending = len(self._detect_queue)
+            self._save_state(state)
+
+        return {
+            "batch_size": len(staged_videos),
+            "queue_pending": len(self._detect_queue),
+            "jobs": queued_jobs,
+            "job": queued_jobs[0] if queued_jobs and queued_jobs[0].get("job_id") else None,
+        }
+
+    def _launch_detection(self, item: dict[str, Any]) -> DetectJob:
+        video_path: Path = item["video_path"]
+        video_name: str = item["video_name"]
+        model_path: Path = item["model_path"]
+        frame_stride: int = item["frame_stride"]
+        confidence: float = item["confidence"]
+        device: str | int = item["device"]
+
         job_id = uuid.uuid4().hex[:12]
         directory = self._job_dir(job_id)
         directory.mkdir(parents=True, exist_ok=True)
         target_video = directory / "video.mp4"
         target_video.write_bytes(video_path.read_bytes())
+        if "_detect_staging" in video_path.as_posix():
+            video_path.unlink(missing_ok=True)
 
+        video_start = parse_video_start_time(video_name)
         job = DetectJob(
             job_id=job_id,
             video_name=video_name,
@@ -235,6 +358,13 @@ class DetectPipelineManager:
         )
         self._save_job(job)
 
+        meta = {
+            "video_name": video_name,
+            "video_start": video_start.isoformat() if video_start else None,
+        }
+        (directory / "video_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+        state = self._load_state()
         state.detect_status = "running"
         state.detect_job_id = job_id
         state.detect_progress_pct = 0.0
@@ -242,11 +372,12 @@ class DetectPipelineManager:
         state.detect_total_frames = 0
         state.detect_frames_with_objects = 0
         state.detect_error = None
+        state.detect_queue_pending = len(self._detect_queue)
         self._save_state(state)
 
         thread = threading.Thread(
             target=self._run_detection,
-            args=(job_id, target_video, model_path, frame_stride, confidence, device),
+            args=(job_id, target_video, model_path, frame_stride, confidence, device, video_name),
             daemon=True,
         )
         self._detect_threads[job_id] = thread
@@ -297,6 +428,7 @@ class DetectPipelineManager:
         frame_stride: int,
         confidence: float,
         device: str | int,
+        video_name: str,
     ) -> None:
         job = self.get_detect_job(job_id)
         try:
@@ -315,22 +447,41 @@ class DetectPipelineManager:
                 device=device,
                 on_progress=on_progress,
             )
+            manifest["video_name"] = video_name
+            video_start = parse_video_start_time(video_name)
+            if video_start:
+                manifest["video_start"] = video_start.isoformat()
+            manifest_path = self._job_dir(job_id) / "detections.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+            added = merge_job_manifest(
+                self._timeline_path,
+                job_id=job_id,
+                video_name=video_name,
+                manifest=manifest,
+            )
+
             job = self.get_detect_job(job_id)
             job.status = "completed"
             job.progress = 1.0
             job.processed_frames = manifest["frames_processed"]
             job.total_frames = manifest["frames_processed"]
             job.frames_with_detections = manifest["frames_with_detections"]
-            job.manifest_path = str((self._job_dir(job_id) / "detections.json").resolve())
+            job.manifest_path = str(manifest_path.resolve())
             self._save_job(job)
 
+            self._batch_done += 1
+            summary = timeline_summary(self._timeline_path)
             state = self._load_state()
-            state.detect_status = "completed"
             state.detect_progress_pct = 1.0
             state.detect_processed_frames = job.processed_frames
             state.detect_total_frames = job.total_frames
             state.detect_frames_with_objects = job.frames_with_detections
+            state.detect_batch_done = self._batch_done
+            state.detect_timeline_events = summary["segment_count"]
             self._save_state(state)
+
+            self._start_next_queued_or_finish(success=True)
         except Exception as exc:
             logger.exception("Detection failed for job %s", job_id)
             job.status = "error"
@@ -340,8 +491,28 @@ class DetectPipelineManager:
             state.detect_status = "error"
             state.detect_error = str(exc)
             self._save_state(state)
+            self._detect_queue.clear()
         finally:
             self._detect_threads.pop(job_id, None)
+
+    def _start_next_queued_or_finish(self, *, success: bool) -> None:
+        with self._lock:
+            if self._detect_queue:
+                next_item = self._detect_queue.pop(0)
+                state = self._load_state()
+                state.detect_queue_pending = len(self._detect_queue)
+                self._save_state(state)
+                self._launch_detection(next_item)
+                return
+
+            state = self._load_state()
+            state.detect_status = "completed" if success else state.detect_status
+            state.detect_queue_pending = 0
+            state.detect_batch_total = self._batch_total
+            state.detect_batch_done = self._batch_done
+            summary = timeline_summary(self._timeline_path)
+            state.detect_timeline_events = summary["segment_count"]
+            self._save_state(state)
 
     def _save_job(self, job: DetectJob) -> None:
         path = self._job_dir(job.job_id) / "job.json"
@@ -370,8 +541,31 @@ class DetectPipelineManager:
                     continue
         return jobs
 
-    def get_detection_manifest(self, job_id: str) -> dict[str, Any]:
+    def get_detection_manifest(
+        self,
+        job_id: str,
+        *,
+        detections_only: bool = False,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
         path = self._job_dir(job_id) / "detections.json"
         if not path.exists():
             raise FileNotFoundError("Detection results not ready")
-        return json.loads(path.read_text(encoding="utf-8"))
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        frames = manifest.get("frames", [])
+        if detections_only:
+            frames = [frame for frame in frames if frame.get("detections")]
+        total_matching = len(frames)
+        if limit is not None:
+            frames = frames[offset : offset + limit]
+        payload = {
+            key: value
+            for key, value in manifest.items()
+            if key != "frames"
+        }
+        payload["frames"] = frames
+        payload["total_matching"] = total_matching
+        payload["offset"] = offset
+        payload["limit"] = limit
+        return payload

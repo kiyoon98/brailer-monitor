@@ -45,12 +45,18 @@
 
     <section class="panel">
       <h2>3. 비디오 탐지</h2>
-      <input id="detectVideo" type="file" accept="video/*" />
+      <p class="hint">파일명 예: JJR-102283_stream04_260201_040016.mp4 → 2026-02-01 04:00 시작</p>
+      <label class="file-label">비디오 (여러 파일 선택 가능)
+        <input id="detectVideo" type="file" accept="video/*" multiple />
+      </label>
       <div class="row">
         <label>프레임 간격 <input id="frameStride" type="number" value="5" min="1" /></label>
         <label>Confidence <input id="confidence" type="number" value="0.35" min="0.05" max="1" step="0.05" /></label>
       </div>
-      <button id="detectBtn" type="button" disabled>탐지 시작</button>
+      <div class="row detect-actions">
+        <button id="detectBtn" type="button" disabled>탐지 시작</button>
+        <button id="resetTimelineBtn" type="button" class="secondary">결과 초기화</button>
+      </div>
       <div id="detectProgressWrap" class="progress-wrap hidden">
         <div class="progress-bar"><div id="detectProgressBar" class="progress-fill"></div></div>
         <span id="detectProgressText" class="progress-text"></span>
@@ -58,27 +64,49 @@
       <div id="detectStatus" class="status"></div>
     </section>
 
-    <section id="importFramePanel" class="panel full hidden">
-      <div class="panel-head">
-        <h2>Import된 프레임 <span id="importFrameCount" class="badge">0</span></h2>
-        <label class="split-filter">Split
-          <select id="importFrameSplit">
-            <option value="all">전체</option>
-            <option value="train">train</option>
-            <option value="val">val</option>
-          </select>
-        </label>
+    <section id="importFramePanel" class="panel full collapsible collapsed hidden">
+      <button id="importFrameToggle" type="button" class="panel-toggle" aria-expanded="false">
+        <span class="panel-toggle-title">Import된 프레임 <span id="importFrameCount" class="badge">0</span></span>
+        <span id="importFrameToggleIcon" class="toggle-icon">▶</span>
+      </button>
+      <div id="importFrameBody" class="collapsible-body hidden">
+        <div class="panel-head">
+          <label class="split-filter">Split
+            <select id="importFrameSplit">
+              <option value="all">전체</option>
+              <option value="train">train</option>
+              <option value="val">val</option>
+            </select>
+          </label>
+        </div>
+        <div id="importFrameResults" class="frame-results"></div>
+        <button id="importFrameMore" type="button" class="secondary hidden">더 보기</button>
       </div>
-      <div id="importFrameResults" class="frame-results"></div>
-      <button id="importFrameMore" type="button" class="secondary hidden">더 보기</button>
     </section>
 
     <section class="panel full">
-      <h2>프레임별 탐지 결과 <span id="frameCount" class="badge">0</span></h2>
-      <div id="frameResults" class="frame-results"></div>
+      <h2>탐지 타임라인 <span id="frameCount" class="badge">0</span></h2>
+      <div id="timelineSummary" class="timeline-summary"></div>
+      <div id="timelineAxis" class="timeline-axis hidden">
+        <div class="timeline-axis-labels">
+          <span id="timelineRangeStart" class="timeline-axis-start"></span>
+          <span id="timelineRangeEnd" class="timeline-axis-end"></span>
+        </div>
+        <div id="timelineRail" class="timeline-rail"></div>
+      </div>
+      <div id="frameResults" class="timeline-segment-list"></div>
+      <button id="detectFrameMore" type="button" class="secondary hidden">더 보기</button>
     </section>
   </main>
 
-  <script src="/static/detect.js?v=5"></script>
+  <div id="frameLightbox" class="frame-lightbox hidden" role="dialog" aria-modal="true" aria-label="프레임 확대 보기">
+    <button id="frameLightboxClose" type="button" class="lightbox-close" aria-label="닫기">✕</button>
+    <div class="lightbox-content">
+      <img id="frameLightboxImg" alt="" />
+      <div id="frameLightboxMeta" class="lightbox-meta"></div>
+    </div>
+  </div>
+
+  <script src="/static/detect.js?v=15"></script>
 </body>
 </html>
