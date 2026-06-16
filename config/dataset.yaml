@@ -4,6 +4,6 @@ train: images/train
 val: images/val
 
 names:
-  0: brailer
+  0: win
 
 # task: segment, train: 78, val: 19

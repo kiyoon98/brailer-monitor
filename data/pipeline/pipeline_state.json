@@ -4,7 +4,7 @@
     "dataset_root": "/home/koast/Documents/brailer-monitor/data/dataset",
     "task_type": "segment",
     "class_names": [
-      "brailer"
+      "win"
     ],
     "train_images": 78,
     "val_images": 19,
@@ -13,11 +13,11 @@
     "meta_path": "/home/koast/Documents/brailer-monitor/data/dataset/import_meta.json",
     "label_summary": {
       "class_names": [
-        "brailer"
+        "win"
       ],
       "objects": [
         {
-          "name": "brailer",
+          "name": "win",
           "color": "#7c6453",
           "cvat_type": "any",
           "annotation_count": 97,
@@ -32,23 +32,23 @@
     }
   },
   "import_error": null,
-  "train_status": "completed",
-  "train_progress": "done",
-  "train_epoch": 50,
-  "train_epochs": 50,
-  "train_progress_pct": 1.0,
-  "train_weights": "/home/koast/Documents/brailer-monitor/runs/segment/runs/segment/brailer_seg-11/weights/best.pt",
+  "train_status": "idle",
+  "train_progress": null,
+  "train_epoch": 0,
+  "train_epochs": 0,
+  "train_progress_pct": 0.0,
+  "train_weights": null,
   "train_error": null,
-  "detect_status": "running",
-  "detect_job_id": "729dfcf0a412",
-  "detect_progress_pct": 0.7488888888888889,
-  "detect_processed_frames": 337,
-  "detect_total_frames": 450,
+  "detect_status": "completed",
+  "detect_job_id": "c2b4ac089eb3",
+  "detect_progress_pct": 1.0,
+  "detect_processed_frames": 900,
+  "detect_total_frames": 900,
   "detect_frames_with_objects": 0,
-  "detect_queue_pending": 231,
-  "detect_batch_total": 288,
-  "detect_batch_done": 56,
+  "detect_queue_pending": 0,
+  "detect_batch_total": 1,
+  "detect_batch_done": 1,
   "detect_timeline_events": 0,
   "detect_error": null,
-  "updated_at": "2026-06-15T05:25:47.932298+00:00"
+  "updated_at": "2026-06-16T05:45:45.237265+00:00"
 }

@@ -131,6 +131,10 @@ class DetectTimelineTests(unittest.TestCase):
             5000,
         )
         self.assertEqual(
+            detection_area_px({"area_px": 0, "bbox_xyxy": [0, 0, 100, 50]}),
+            5000,
+        )
+        self.assertEqual(
             detection_area_px({"area_px": 12340, "bbox_xyxy": [0, 0, 1, 1]}),
             12340,
         )

@@ -48,8 +48,11 @@ def _video_duration_sec(manifest: dict[str, Any]) -> float:
 
 def detection_area_px(det: dict[str, Any]) -> int:
     """Pixel area inside the detection mask, or bounding-box area as fallback."""
-    if det.get("area_px") is not None:
-        return int(det["area_px"])
+    area = det.get("area_px")
+    if area is not None:
+        area_int = int(area)
+        if area_int > 0:
+            return area_int
     bbox = det.get("bbox_xyxy") or []
     if len(bbox) == 4:
         return int(max(0.0, float(bbox[2]) - float(bbox[0])) * max(0.0, float(bbox[3]) - float(bbox[1])))
@@ -62,8 +65,9 @@ def _frame_to_dict(
     class_name: str,
     confidence: float,
     area_px: int,
+    bbox_xyxy: list[float] | None = None,
 ) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "job_id": event["job_id"],
         "video_name": event["video_name"],
         "frame_index": event.get("frame_index"),
@@ -75,6 +79,9 @@ def _frame_to_dict(
         "confidence": confidence,
         "area_px": area_px,
     }
+    if bbox_xyxy:
+        out["bbox_xyxy"] = bbox_xyxy
+    return out
 
 
 def expand_class_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -90,12 +97,14 @@ def expand_class_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if prev is None or float(det.get("confidence", 0)) > float(prev.get("confidence", 0)):
                 best[cls] = det
         for cls, det in best.items():
+            bbox = det.get("bbox_xyxy")
             expanded.append(
                 _frame_to_dict(
                     event,
                     class_name=cls,
                     confidence=float(det.get("confidence", 0)),
                     area_px=detection_area_px(det),
+                    bbox_xyxy=list(bbox) if isinstance(bbox, list) and len(bbox) == 4 else None,
                 )
             )
     return expanded
@@ -141,9 +150,10 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
 
     confidences = [float(f.get("confidence", 0)) for f in frames]
     areas = [int(f.get("area_px") or 0) for f in frames]
+    best_area_frame = max(frames, key=lambda f: int(f.get("area_px") or 0), default=frames[0])
     segment_id = f"{first['job_id']}:{first['class_name']}:{first.get('frame_index', 0)}"
 
-    return {
+    out: dict[str, Any] = {
         "segment_id": segment_id,
         "job_id": first["job_id"],
         "video_name": first["video_name"],
@@ -161,6 +171,10 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
         "preview_path": first.get("preview_path"),
         "preview_job_id": first["job_id"],
     }
+    bbox = best_area_frame.get("bbox_xyxy")
+    if isinstance(bbox, list) and len(bbox) == 4:
+        out["bbox_xyxy"] = bbox
+    return out
 
 
 def build_segments(timeline: dict[str, Any]) -> list[dict[str, Any]]:
@@ -338,6 +352,7 @@ def list_timeline(
             "frame_count": segment["frame_count"],
             "max_confidence": segment.get("max_confidence"),
             "max_area_px": segment.get("max_area_px"),
+            "bbox_xyxy": segment.get("bbox_xyxy"),
         }
         for segment in segments
     ]

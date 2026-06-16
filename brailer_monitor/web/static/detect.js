@@ -7,6 +7,8 @@ const els = {
   epochs: document.getElementById("epochs"),
   batch: document.getElementById("batch"),
   trainBtn: document.getElementById("trainBtn"),
+  resetTrainBtn: document.getElementById("resetTrainBtn"),
+  resetAndTrainBtn: document.getElementById("resetAndTrainBtn"),
   stopTrainBtn: document.getElementById("stopTrainBtn"),
   trainStatus: document.getElementById("trainStatus"),
   trainProgressWrap: document.getElementById("trainProgressWrap"),
@@ -15,6 +17,7 @@ const els = {
   detectVideo: document.getElementById("detectVideo"),
   detectUploadSection: document.getElementById("detectUploadSection"),
   detectLakeSection: document.getElementById("detectLakeSection"),
+  lakeProfile: document.getElementById("lakeProfile"),
   lakeBaseUrl: document.getElementById("lakeBaseUrl"),
   lakeStartMonth: document.getElementById("lakeStartMonth"),
   lakeStartDay: document.getElementById("lakeStartDay"),
@@ -56,9 +59,19 @@ const els = {
   importFrameMore: document.getElementById("importFrameMore"),
   frameLightbox: document.getElementById("frameLightbox"),
   frameLightboxGallery: document.getElementById("frameLightboxGallery"),
+  frameLightboxViewer: document.getElementById("frameLightboxViewer"),
+  frameLightboxViewport: document.getElementById("frameLightboxViewport"),
   frameLightboxImg: document.getElementById("frameLightboxImg"),
   frameLightboxMeta: document.getElementById("frameLightboxMeta"),
   frameLightboxClose: document.getElementById("frameLightboxClose"),
+  frameLightboxBack: document.getElementById("frameLightboxBack"),
+  frameLightboxZoomIn: document.getElementById("frameLightboxZoomIn"),
+  frameLightboxZoomOut: document.getElementById("frameLightboxZoomOut"),
+  frameLightboxZoomReset: document.getElementById("frameLightboxZoomReset"),
+  frameLightboxZoomLabel: document.getElementById("frameLightboxZoomLabel"),
+  frameLightboxPrev: document.getElementById("frameLightboxPrev"),
+  frameLightboxNext: document.getElementById("frameLightboxNext"),
+  frameLightboxCounter: document.getElementById("frameLightboxCounter"),
 };
 
 const POLL_MS = 500;
@@ -67,6 +80,18 @@ const DETECT_FRAME_LIMIT = 200;
 const TIMELINE_ZOOM_MIN = 1;
 const TIMELINE_ZOOM_MAX = 48;
 const TIMELINE_ZOOM_STEP = 1.35;
+const FRAME_VIEWER_ZOOM_MIN = 1;
+const FRAME_VIEWER_ZOOM_MAX = 8;
+const FRAME_VIEWER_ZOOM_STEP = 1.2;
+
+let lightboxSegment = null;
+let lightboxFrames = [];
+let lightboxFrameIndex = 0;
+let lightboxViewerZoom = 1;
+let lightboxPanX = 0;
+let lightboxPanY = 0;
+let lightboxDragPointer = null;
+let timelineClickTimer = null;
 
 let pollTimer = null;
 let handledDetectJobId = null;
@@ -80,24 +105,65 @@ let timelineAxisSegments = [];
 let timelineZoom = 1;
 let detectSourceMode = "upload";
 let lakeVideosReady = 0;
+let lakeProfileId = null;
 let detectFrameJobId = null;
 let lastPipelineState = null;
 let importFramesLoaded = false;
 let importPanelExpanded = false;
 let labelSummaryKey = "";
 let detectSession = 0;
+let detectSessionActive = false;
 let detectStopRequested = false;
 
+function isDetectBusy(state = lastPipelineState) {
+  return (
+    detectSessionActive ||
+    !!activeDetectJobId ||
+    isDetectActive(state)
+  );
+}
+
+function endDetectSession() {
+  detectSessionActive = false;
+}
+
 function isDetectStopping(state = lastPipelineState) {
-  return state?.detect_status === "cancelling" || state?.detect_status === "cancelled";
+  return state?.detect_status === "cancelling" || detectStopRequested;
+}
+
+function showDetectProgressFromState(state) {
+  if (!state || (state.detect_status !== "running" && state.detect_status !== "cancelling")) {
+    return false;
+  }
+  const processed = state.detect_processed_frames || 0;
+  const total = state.detect_total_frames || 0;
+  const withObjects = state.detect_frames_with_objects || 0;
+  const pct =
+    state.detect_progress_pct ??
+    (total > 0 ? processed / total : processed > 0 ? 0.01 : 0);
+  const barText = detectProgressText(processed, total, withObjects, pct, state);
+  setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, pct, barText);
+  setStatus(
+    els.detectStatus,
+    state.detect_status === "cancelling" ? "탐지 중지 중..." : barText,
+  );
+  els.detectBtn.disabled = true;
+  return true;
 }
 
 function updateStopButtons(state = lastPipelineState) {
-  const trainRunning = state?.train_status === "running";
+  const trainRunning =
+    state?.train_status === "running" || state?.train_progress === "cancelling";
   const detectRunning =
-    state?.detect_status === "running" || state?.detect_status === "cancelling";
+    isDetectBusy(state) ||
+    state?.detect_status === "running" ||
+    state?.detect_status === "cancelling";
+  const importDone = state?.import_status === "completed";
+  const canResetTrain = importDone && !trainRunning;
 
   els.stopTrainBtn?.classList.toggle("hidden", !trainRunning);
+  els.resetTrainBtn?.classList.toggle("hidden", !canResetTrain);
+  els.resetAndTrainBtn?.classList.toggle("hidden", !canResetTrain);
   els.stopDetectBtn?.classList.toggle("hidden", !detectRunning);
   if (els.stopDetectBtn) {
     els.stopDetectBtn.disabled = state?.detect_status === "cancelling" || detectStopRequested;
@@ -112,11 +178,29 @@ function updateStopButtons(state = lastPipelineState) {
 
 async function api(path, options = {}) {
   const res = await fetch(path, options);
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || res.statusText);
+    if (text) {
+      try {
+        const payload = JSON.parse(text);
+        if (payload?.detail) {
+          throw new Error(
+            typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail),
+          );
+        }
+      } catch (parseErr) {
+        if (!(parseErr instanceof SyntaxError)) {
+          throw parseErr;
+        }
+      }
+    }
+    if (res.status === 404) {
+      throw new Error("API를 찾을 수 없습니다. 웹 서버를 재시작한 뒤 다시 시도하세요.");
+    }
+    throw new Error(text || res.statusText || `HTTP ${res.status}`);
   }
-  return res.json();
+  if (!text) return {};
+  return JSON.parse(text);
 }
 
 function getDetectSourceMode() {
@@ -133,6 +217,7 @@ function setDetectSourceMode(mode) {
 
 function readLakeRange() {
   return {
+    profile: lakeProfileId || els.lakeProfile?.value || null,
     start_month: Number(els.lakeStartMonth.value),
     start_day: Number(els.lakeStartDay.value),
     start_hour: Number(els.lakeStartHour.value),
@@ -144,8 +229,16 @@ function readLakeRange() {
 
 function updateDetectButtonState() {
   const trainDone = lastPipelineState?.train_status === "completed";
+  const detectActive = isDetectBusy();
   if (!trainDone) {
     els.detectBtn.disabled = true;
+    if (lastPipelineState?.import_status === "completed" && !detectActive && els.detectStatus) {
+      const hint =
+        lastPipelineState?.train_status === "running"
+          ? "학습 완료 후 탐지할 수 있습니다."
+          : "학습된 모델이 없습니다. 학습을 먼저 완료하세요.";
+      setStatus(els.detectStatus, hint);
+    }
     return;
   }
   if (detectSourceMode === "lake") {
@@ -155,11 +248,29 @@ function updateDetectButtonState() {
   els.detectBtn.disabled = !els.detectVideo.files?.length;
 }
 
-async function loadLakeConfig() {
+function formatLakeFilenameHint(config) {
+  const minute = String(config.minute_slots?.[0] ?? 0).padStart(2, "0");
+  const suffix = config.second_suffixes?.[0] ?? "??";
+  return `${config.file_prefix}_YYMMDD_HH${minute}${suffix}.mp4`;
+}
+
+async function loadLakeConfig(profile = lakeProfileId) {
   try {
-    const config = await api("/api/pipeline/lake-videos/config");
+    const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+    const config = await api(`/api/pipeline/lake-videos/config${query}`);
+    lakeProfileId = config.profile || profile || null;
+    if (els.lakeProfile && config.profiles?.length) {
+      const selected = lakeProfileId || config.profile;
+      els.lakeProfile.innerHTML = config.profiles
+        .map((item) => {
+          const isSelected = item.id === selected || (!selected && item.default);
+          return `<option value="${item.id}"${isSelected ? " selected" : ""}>${item.label}</option>`;
+        })
+        .join("");
+      lakeProfileId = els.lakeProfile.value;
+    }
     if (els.lakeBaseUrl) {
-      els.lakeBaseUrl.textContent = `${config.base_url} · ${config.file_prefix}_YYMMDD_HHMM${config.minute_slots?.[0] ?? 0}16.mp4 형식`;
+      els.lakeBaseUrl.textContent = `${config.base_url} · ${formatLakeFilenameHint(config)} · ${config.year}년`;
     }
   } catch (err) {
     console.error("loadLakeConfig failed", err);
@@ -199,17 +310,49 @@ async function discoverLakeVideos() {
   }
 }
 
-function startDetectPolling(result, batchTotal) {
-  const running = result.jobs?.find((job) => job.job_id) || result.job;
-  activeDetectJobId = running?.job_id || null;
+function beginDetectSession(batchTotal, queuePending = Math.max(0, batchTotal - 1)) {
+  detectSession += 1;
+  detectSessionActive = true;
+  handledDetectJobId = null;
+  detectStopRequested = false;
+  activeDetectJobId = null;
   lastPipelineState = {
     ...(lastPipelineState || {}),
     detect_status: "running",
+    detect_batch_total: batchTotal,
+    detect_batch_done: 0,
+    detect_queue_pending: queuePending,
+    detect_processed_frames: 0,
+    detect_total_frames: 0,
+    detect_frames_with_objects: 0,
+    detect_progress_pct: 0,
+    detect_error: null,
+  };
+  setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
+  setStatus(els.detectStatus, "탐지 준비 중...");
+  updateStopButtons(lastPipelineState);
+  startPolling();
+}
+
+function finishDetectStart(result, batchTotal) {
+  const running = result.jobs?.find((job) => job.job_id) || result.job;
+  activeDetectJobId = running?.job_id || result.job_id || null;
+  lastPipelineState = {
+    ...(lastPipelineState || {}),
+    detect_status: "running",
+    detect_job_id: activeDetectJobId || lastPipelineState?.detect_job_id,
     detect_batch_total: result.batch_total ?? result.batch_size ?? batchTotal,
     detect_batch_done: result.batch_done ?? 0,
     detect_queue_pending: result.queue_pending ?? 0,
   };
-  startPolling();
+  if (activeDetectJobId) {
+    showDetectProgress(0, 0, 0, 0, lastPipelineState);
+  } else if ((result.queue_pending || 0) > 0) {
+    setStatus(els.detectStatus, `대기열 ${result.queue_pending}개 · 첫 비디오 시작 중...`);
+  } else {
+    showDetectProgressFromState(lastPipelineState);
+  }
+  updateStopButtons(lastPipelineState);
 }
 
 function fmtTime(sec) {
@@ -316,6 +459,7 @@ function appendImportFrameCards(frames) {
 }
 
 function handleFrameCardDblClick(event) {
+  clearTimeout(timelineClickTimer);
   const segmentRow = event.target.closest(".timeline-segment-row, .timeline-segment-marker");
   if (segmentRow?.dataset.segmentId) {
     openSegmentLightboxById(segmentRow.dataset.segmentId);
@@ -402,7 +546,8 @@ function showDetectProgress(processed, total, withObjects, pct, state = lastPipe
     pct,
     detectProgressText(processed, total, withObjects, pct, state),
   );
-  setStatus(els.detectStatus, "탐지 진행 중...");
+  const detail = detectProgressText(processed, total, withObjects, pct, state);
+  setStatus(els.detectStatus, detail);
   els.detectBtn.disabled = true;
 }
 
@@ -427,6 +572,49 @@ function showDetectComplete(job, state = lastPipelineState) {
   els.detectBtn.disabled = false;
 }
 
+function isTrainActive(state) {
+  return state?.train_status === "running";
+}
+
+function isDetectActive(state) {
+  if (!state) return false;
+  return (
+    state.detect_status === "running" ||
+    state.detect_status === "cancelling" ||
+    (state.detect_queue_pending || 0) > 0 ||
+    ((state.detect_batch_total || 0) > (state.detect_batch_done || 0) &&
+      state.detect_status !== "error" &&
+      state.detect_status !== "cancelled")
+  );
+}
+
+function trainStatusText(state) {
+  const epoch = state.train_epoch || 0;
+  const total = state.train_epochs || Number(els.epochs.value) || 1;
+  const pct = Math.round((state.train_progress_pct || 0) * 100);
+  const progress = state.train_progress || "";
+
+  if (progress === "cancelling") {
+    return {
+      bar: `학습 중지 중 · epoch ${epoch}/${total}`,
+      status: "학습 중지 요청됨 · 현재 배치가 끝나면 멈춥니다...",
+    };
+  }
+  if (progress === "starting") {
+    return { bar: "학습 준비 중...", status: "모델·데이터 로딩 중..." };
+  }
+  if (progress === "training" && epoch === 0) {
+    return { bar: "학습 시작 중...", status: "첫 epoch 진행 중..." };
+  }
+  if (epoch > 0) {
+    return {
+      bar: `epoch ${epoch}/${total} (${pct}%)`,
+      status: `학습 중 · epoch ${epoch}/${total} · ${pct}%`,
+    };
+  }
+  return { bar: progress || "학습 중...", status: progress || "학습 중..." };
+}
+
 function renderPipelineState(state) {
   const meta = state.dataset_meta;
 
@@ -445,19 +633,15 @@ function renderPipelineState(state) {
   }
 
   if (state.train_status === "running") {
-    const pct = state.train_progress_pct || 0;
-    const epoch = state.train_epoch || 0;
-    const total = state.train_epochs || Number(els.epochs.value) || 1;
+    const { bar, status } = trainStatusText(state);
     setProgress(
       els.trainProgressWrap,
       els.trainProgressBar,
       els.trainProgressText,
-      pct,
-      `학습 중 epoch ${epoch}/${total} (${Math.round(pct * 100)}%)`,
+      state.train_progress_pct ?? 0,
+      bar,
     );
-    const progressLabel =
-      state.train_progress === "cancelling" ? "학습 중지 요청됨..." : state.train_progress || "학습 중...";
-    setStatus(els.trainStatus, progressLabel);
+    setStatus(els.trainStatus, status);
     els.trainBtn.disabled = true;
   } else if (state.train_status === "completed") {
     setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, 1, "학습 완료");
@@ -474,20 +658,57 @@ function renderPipelineState(state) {
     els.trainBtn.disabled = false;
   } else {
     setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, null);
+    if (state.import_status === "completed" && state.train_status === "idle") {
+      setStatus(els.trainStatus, "학습된 모델 없음 · 학습을 시작하세요.");
+    }
   }
 
-  if (state.detect_status === "cancelled" || state.detect_status === "cancelling") {
+  if (state.detect_status === "running" || state.detect_status === "cancelling") {
+    showDetectProgressFromState(state);
+  } else if (
+    detectSessionActive &&
+    !activeDetectJobId &&
+    (state.detect_status === "completed" || state.detect_status === "cancelled")
+  ) {
+    setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
+    setStatus(els.detectStatus, "비디오 업로드·탐지 준비 중...");
+    els.detectBtn.disabled = true;
+  } else if (state.detect_status === "completed" && !isDetectBusy(state)) {
+    const batch =
+      state.detect_batch_total > 1
+        ? ` (${state.detect_batch_done}/${state.detect_batch_total} 비디오)`
+        : "";
+    setProgress(
+      els.detectProgressWrap,
+      els.detectProgressBar,
+      els.detectProgressText,
+      1,
+      `탐지 완료 · ${state.detect_processed_frames || 0}프레임 · 객체 ${state.detect_frames_with_objects || 0}개${batch}`,
+    );
+    setStatus(
+      els.detectStatus,
+      `탐지 완료 · 누적 ${state.detect_timeline_events || 0}건`,
+      "ok",
+    );
+    els.detectBtn.disabled = false;
+    detectStopRequested = false;
+    endDetectSession();
+    updateDetectButtonState();
+  } else if (state.detect_status === "error") {
     activeDetectJobId = null;
+    endDetectSession();
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
-    const message =
-      state.detect_status === "cancelling"
-        ? "탐지 중지 중..."
-        : state.detect_error || "탐지가 중지되었습니다.";
-    setStatus(els.detectStatus, message, state.detect_status === "cancelled" ? "error" : "");
-    if (state.detect_status === "cancelled") {
-      detectStopRequested = false;
-      updateDetectButtonState();
-    }
+    setStatus(els.detectStatus, state.detect_error || "탐지 실패", "error");
+    els.detectBtn.disabled = false;
+    detectStopRequested = false;
+    updateDetectButtonState();
+  } else if (state.detect_status === "cancelled" && !isDetectBusy(state)) {
+    activeDetectJobId = null;
+    endDetectSession();
+    setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+    setStatus(els.detectStatus, state.detect_error || "탐지가 중지되었습니다.", "error");
+    detectStopRequested = false;
+    updateDetectButtonState();
   }
 
   updateStopButtons(state);
@@ -498,9 +719,23 @@ function formatConfidence(confidence) {
   return `${(confidence * 100).toFixed(0)}%`;
 }
 
+function bboxAreaPx(bbox) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return null;
+  const w = Math.max(0, Number(bbox[2]) - Number(bbox[0]));
+  const h = Math.max(0, Number(bbox[3]) - Number(bbox[1]));
+  const area = Math.round(w * h);
+  return area > 0 ? area : null;
+}
+
+function resolveAreaPx(item) {
+  const direct = Number(item?.max_area_px ?? item?.area_px);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  return bboxAreaPx(item?.bbox_xyxy);
+}
+
 function formatAreaPx(areaPx) {
-  const px = Number(areaPx) || 0;
-  if (px <= 0) return "0px";
+  const px = Number(areaPx);
+  if (!Number.isFinite(px) || px <= 0) return "-";
   if (px >= 1_000_000) return `${(px / 1_000_000).toFixed(2)}M px`;
   if (px >= 10_000) return `${(px / 1000).toFixed(1)}k px`;
   return `${px.toLocaleString()} px`;
@@ -508,19 +743,131 @@ function formatAreaPx(areaPx) {
 
 function formatSegmentStats(segmentOrFrame) {
   const conf = formatConfidence(segmentOrFrame.max_confidence ?? segmentOrFrame.confidence);
-  const area = formatAreaPx(segmentOrFrame.max_area_px ?? segmentOrFrame.area_px);
+  const area = formatAreaPx(resolveAreaPx(segmentOrFrame));
   return `신뢰도 ${conf} · 면적 ${area}`;
+}
+
+function framePreviewSrc(frame) {
+  return previewUrl(frame.job_id, frame.preview_path);
+}
+
+function clampFrameViewerZoom(value) {
+  return Math.min(FRAME_VIEWER_ZOOM_MAX, Math.max(FRAME_VIEWER_ZOOM_MIN, value));
+}
+
+function resetLightboxViewerTransform() {
+  lightboxViewerZoom = 1;
+  lightboxPanX = 0;
+  lightboxPanY = 0;
+  applyLightboxViewerTransform();
+}
+
+function applyLightboxViewerTransform() {
+  if (!els.frameLightboxImg) return;
+  els.frameLightboxImg.style.transform = `translate(calc(-50% + ${lightboxPanX}px), calc(-50% + ${lightboxPanY}px)) scale(${lightboxViewerZoom})`;
+  if (els.frameLightboxZoomLabel) {
+    els.frameLightboxZoomLabel.textContent = `${Math.round(lightboxViewerZoom * 100)}%`;
+  }
+}
+
+function setLightboxViewerZoom(nextZoom) {
+  lightboxViewerZoom = clampFrameViewerZoom(nextZoom);
+  applyLightboxViewerTransform();
+}
+
+function showLightboxMode(mode) {
+  const isGallery = mode === "gallery";
+  els.frameLightboxGallery?.classList.toggle("hidden", !isGallery);
+  els.frameLightboxViewer?.classList.toggle("hidden", isGallery);
+  els.frameLightboxBack?.classList.toggle(
+    "hidden",
+    isGallery || !lightboxFrames || lightboxFrames.length <= 1,
+  );
+}
+
+function renderLightboxSegmentMeta(segment, frame) {
+  if (!els.frameLightboxMeta) return;
+  const range =
+    segment?.time_label ||
+    `${segment?.start_absolute_time_label || ""} – ${segment?.end_absolute_time_label || ""}`;
+  if (frame && segment) {
+    const time = frame.absolute_time_label || fmtTime(frame.timestamp_sec);
+    els.frameLightboxMeta.innerHTML = `
+      <div><strong>${segment.class_name}</strong> · ${time}</div>
+      <div class="objects">${segment.video_name} · ${formatSegmentStats(frame)}</div>`;
+    return;
+  }
+  if (segment) {
+    els.frameLightboxMeta.innerHTML = `
+      <div><strong>${segment.class_name}</strong> · ${range}</div>
+      <div class="objects">${segment.video_name} · ${lightboxFrames.length}프레임 · ${formatSegmentStats(segment)}</div>`;
+    return;
+  }
+  els.frameLightboxMeta.innerHTML = "";
+}
+
+function showLightboxFrame(index) {
+  if (!lightboxFrames.length || !els.frameLightboxImg) return;
+  lightboxFrameIndex = Math.max(0, Math.min(index, lightboxFrames.length - 1));
+  const frame = lightboxFrames[lightboxFrameIndex];
+  const src = framePreviewSrc(frame);
+  if (!src) return;
+
+  showLightboxMode("viewer");
+  resetLightboxViewerTransform();
+  els.frameLightboxImg.onload = () => resetLightboxViewerTransform();
+  els.frameLightboxImg.src = src;
+  renderLightboxSegmentMeta(lightboxSegment, frame);
+
+  if (els.frameLightboxCounter) {
+    els.frameLightboxCounter.textContent = `${lightboxFrameIndex + 1} / ${lightboxFrames.length}`;
+  }
+  if (els.frameLightboxPrev) {
+    els.frameLightboxPrev.disabled = lightboxFrameIndex <= 0;
+  }
+  if (els.frameLightboxNext) {
+    els.frameLightboxNext.disabled = lightboxFrameIndex >= lightboxFrames.length - 1;
+  }
+}
+
+function openLightboxGallery(segment, frames) {
+  if (!els.frameLightbox || !frames?.length) return;
+  lightboxSegment = segment;
+  lightboxFrames = frames;
+  const gallery = els.frameLightboxGallery;
+  gallery.innerHTML = frames
+    .map((frame, index) => {
+      const src = framePreviewSrc(frame);
+      const time = frame.absolute_time_label || fmtTime(frame.timestamp_sec);
+      const stats = formatSegmentStats(frame);
+      return `
+        <div class="lightbox-gallery-item" data-frame-index="${index}" title="클릭하여 확대">
+          <img src="${src}" alt="" loading="lazy" />
+          <div class="caption">${time} · ${stats}</div>
+        </div>`;
+    })
+    .join("");
+  showLightboxMode("gallery");
+  renderLightboxSegmentMeta(segment);
+  els.frameLightbox.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
 }
 
 function openFrameLightbox(imgSrc, titleHtml, objectsHtml) {
   if (!imgSrc || !els.frameLightbox) return;
-  els.frameLightboxGallery?.classList.add("hidden");
-  els.frameLightboxGallery.innerHTML = "";
-  els.frameLightboxImg.classList.remove("hidden");
+  lightboxSegment = null;
+  lightboxFrames = [{ preview_path: null, job_id: null, _src: imgSrc, _title: titleHtml, _objects: objectsHtml }];
+  lightboxFrameIndex = 0;
+  showLightboxMode("viewer");
+  resetLightboxViewerTransform();
   els.frameLightboxImg.src = imgSrc;
   els.frameLightboxMeta.innerHTML = `
     <div><strong>${titleHtml}</strong></div>
     <div class="objects">${objectsHtml || "(없음)"}</div>`;
+  if (els.frameLightboxCounter) els.frameLightboxCounter.textContent = "1 / 1";
+  if (els.frameLightboxPrev) els.frameLightboxPrev.disabled = true;
+  if (els.frameLightboxNext) els.frameLightboxNext.disabled = true;
+  els.frameLightboxBack?.classList.add("hidden");
   els.frameLightbox.classList.remove("hidden");
   document.body.style.overflow = "hidden";
 }
@@ -531,36 +878,34 @@ function previewUrl(jobId, previewPath) {
 }
 
 function openSegmentLightbox(segment, frames) {
-  if (!els.frameLightbox || !frames?.length) return;
-  els.frameLightboxImg.classList.add("hidden");
-  els.frameLightboxImg.removeAttribute("src");
-  const gallery = els.frameLightboxGallery;
-  gallery.innerHTML = frames
-    .map((frame) => {
-      const src = previewUrl(frame.job_id, frame.preview_path);
-      const time = frame.absolute_time_label || fmtTime(frame.timestamp_sec);
-      const stats = formatSegmentStats(frame);
-      return `
-        <div class="lightbox-gallery-item">
-          <img src="${src}" alt="" loading="lazy" />
-          <div class="caption">${time} · ${stats}</div>
-        </div>`;
-    })
-    .join("");
-  gallery.classList.remove("hidden");
-  const range =
-    segment.time_label ||
-    `${segment.start_absolute_time_label || ""} – ${segment.end_absolute_time_label || ""}`;
-  els.frameLightboxMeta.innerHTML = `
-    <div><strong>${segment.class_name}</strong> · ${range}</div>
-    <div class="objects">${segment.video_name} · ${frames.length}프레임 · ${formatSegmentStats(segment)}</div>`;
-  els.frameLightbox.classList.remove("hidden");
-  document.body.style.overflow = "hidden";
+  openLightboxGallery(segment, frames);
+}
+
+async function openSegmentViewerById(segmentId, frameIndex = 0) {
+  try {
+    const { segment, frames } = await api(
+      `/api/pipeline/detect/timeline/segment/${encodeURIComponent(segmentId)}`,
+    );
+    if (!frames?.length) {
+      alert("표시할 프레임이 없습니다.");
+      return;
+    }
+    lightboxSegment = segment;
+    lightboxFrames = frames;
+    showLightboxFrame(frameIndex);
+    els.frameLightbox?.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+  } catch (err) {
+    console.error("openSegmentViewerById failed", err);
+    alert(err.message || "프레임을 불러오지 못했습니다.");
+  }
 }
 
 async function openSegmentLightboxById(segmentId, segmentSummary) {
   try {
-    const { segment, frames } = await api(`/api/pipeline/detect/timeline/segment/${encodeURIComponent(segmentId)}`);
+    const { segment, frames } = await api(
+      `/api/pipeline/detect/timeline/segment/${encodeURIComponent(segmentId)}`,
+    );
     openSegmentLightbox(segment || segmentSummary, frames);
   } catch (err) {
     console.error("openSegmentLightboxById failed", err);
@@ -571,13 +916,67 @@ async function openSegmentLightboxById(segmentId, segmentSummary) {
 function closeFrameLightbox() {
   if (!els.frameLightbox) return;
   els.frameLightbox.classList.add("hidden");
-  els.frameLightboxImg.classList.remove("hidden");
-  els.frameLightboxImg.removeAttribute("src");
+  if (els.frameLightboxImg) {
+    els.frameLightboxImg.removeAttribute("src");
+    els.frameLightboxImg.onload = null;
+  }
   if (els.frameLightboxGallery) {
     els.frameLightboxGallery.classList.add("hidden");
     els.frameLightboxGallery.innerHTML = "";
   }
+  els.frameLightboxViewer?.classList.add("hidden");
+  lightboxSegment = null;
+  lightboxFrames = [];
+  lightboxFrameIndex = 0;
+  lightboxDragPointer = null;
+  els.frameLightboxViewport?.classList.remove("is-dragging");
+  resetLightboxViewerTransform();
   document.body.style.overflow = "";
+}
+
+function handleTimelineFrameClick(event) {
+  const row = event.target.closest(".timeline-segment-row");
+  const marker = event.target.closest(".timeline-segment-marker");
+  const segmentId = row?.dataset.segmentId || marker?.dataset.segmentId;
+  if (!segmentId) return;
+  clearTimeout(timelineClickTimer);
+  timelineClickTimer = setTimeout(() => {
+    openSegmentViewerById(segmentId, 0);
+  }, 220);
+}
+
+function handleLightboxViewportWheel(event) {
+  if (els.frameLightboxViewer?.classList.contains("hidden")) return;
+  event.preventDefault();
+  const delta = event.deltaY < 0 ? FRAME_VIEWER_ZOOM_STEP : 1 / FRAME_VIEWER_ZOOM_STEP;
+  setLightboxViewerZoom(lightboxViewerZoom * delta);
+}
+
+function handleLightboxViewportPointerDown(event) {
+  if (els.frameLightboxViewer?.classList.contains("hidden")) return;
+  if (event.button !== 0) return;
+  lightboxDragPointer = {
+    x: event.clientX,
+    y: event.clientY,
+    panX: lightboxPanX,
+    panY: lightboxPanY,
+  };
+  els.frameLightboxViewport?.classList.add("is-dragging");
+  els.frameLightboxViewport?.setPointerCapture?.(event.pointerId);
+}
+
+function handleLightboxViewportPointerMove(event) {
+  if (!lightboxDragPointer) return;
+  lightboxPanX = lightboxDragPointer.panX + (event.clientX - lightboxDragPointer.x);
+  lightboxPanY = lightboxDragPointer.panY + (event.clientY - lightboxDragPointer.y);
+  applyLightboxViewerTransform();
+}
+
+function handleLightboxViewportPointerUp(event) {
+  if (!lightboxDragPointer) return;
+  lightboxDragPointer = null;
+  els.frameLightboxViewport?.classList.remove("is-dragging");
+  els.frameLightboxViewport?.releasePointerCapture?.(event.pointerId);
 }
 
 function clampTimelineZoom(value) {
@@ -732,7 +1131,7 @@ function appendTimelineSegments(segments) {
   for (const segment of segments) {
     const row = document.createElement("div");
     row.className = "timeline-segment-row";
-    row.title = "더블클릭하여 탐지 프레임 전체 보기";
+    row.title = "클릭: 확대 · 더블클릭: 전체 프레임";
     const src = previewUrl(segment.preview_job_id || segment.job_id, segment.preview_path);
     const img = src ? `<img src="${src}" alt="" loading="lazy" />` : "";
     const frames =
@@ -816,6 +1215,7 @@ async function resetTimeline() {
 
 async function finalizeDetectJob(job) {
   activeDetectJobId = null;
+  endDetectSession();
   showDetectComplete(job, lastPipelineState);
   await loadTimeline({ reset: true });
   handledDetectJobId = job.job_id;
@@ -831,6 +1231,10 @@ async function updateDetectUI(jobId) {
     const { job } = await api(`/api/pipeline/detect/${jobId}`);
 
     if (job.status === "cancelled") {
+      if (isDetectActive(lastPipelineState) || activeDetectJobId) {
+        showDetectProgressFromState(lastPipelineState);
+        return "running";
+      }
       activeDetectJobId = null;
       detectStopRequested = false;
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
@@ -859,19 +1263,25 @@ async function updateDetectUI(jobId) {
         setStatus(els.detectStatus, "탐지 중지 중...");
         return "cancelling";
       }
-      const queuePending = lastPipelineState?.detect_queue_pending > 0;
-      const batchActive =
-        lastPipelineState?.detect_batch_total > 1 &&
-        (lastPipelineState?.detect_batch_done || 0) < lastPipelineState.detect_batch_total;
-      await loadTimeline({ reset: true });
-      if (queuePending || batchActive || lastPipelineState?.detect_status === "running") {
+      const { state: fresh } = await api("/api/pipeline/state");
+      lastPipelineState = fresh;
+      const batchStillRunning =
+        (fresh.detect_queue_pending || 0) > 0 ||
+        (fresh.detect_status === "running" && fresh.detect_job_id !== job.job_id) ||
+        ((fresh.detect_batch_total || 0) > (fresh.detect_batch_done || 0) &&
+          fresh.detect_status !== "error" &&
+          fresh.detect_status !== "completed");
+      if (batchStillRunning) {
+        await loadTimeline({ reset: true });
         setStatus(
           els.detectStatus,
           `비디오 완료: ${job.video_name} · 다음 파일 처리 중...`,
         );
+        activeDetectJobId = fresh.detect_job_id || null;
         return "running";
       }
       await finalizeDetectJob(job);
+      renderPipelineState(fresh);
       return "done";
     }
 
@@ -897,11 +1307,8 @@ async function poll() {
     }
     renderPipelineState(state);
 
-    if (state.train_status === "cancelled" || state.detect_status === "cancelled") {
-      activeDetectJobId = null;
-      detectStopRequested = false;
-      updateDetectButtonState();
-      stopPolling();
+    if (isTrainActive(state)) {
+      updateStopButtons(state);
       return;
     }
 
@@ -910,12 +1317,22 @@ async function poll() {
       return;
     }
 
-    const trainRunning = state.train_status === "running";
-    if (trainRunning) {
+    if (
+      (state.train_status === "cancelled" || state.detect_status === "cancelled") &&
+      !isDetectActive(state) &&
+      !activeDetectJobId
+    ) {
+      detectStopRequested = false;
+      updateDetectButtonState();
+      stopPolling();
       return;
     }
 
-    const jobId = activeDetectJobId || state.detect_job_id;
+    const jobId =
+      activeDetectJobId ||
+      (state.detect_status === "running" || state.detect_status === "cancelling"
+        ? state.detect_job_id
+        : null);
     const batchRunning =
       !isDetectStopping(state) &&
       (state.detect_status === "running" ||
@@ -923,11 +1340,13 @@ async function poll() {
         ((state.detect_batch_total || 0) > (state.detect_batch_done || 0) &&
           state.detect_status !== "error"));
     const needsDetectUI =
+      isDetectActive(state) ||
       !!activeDetectJobId ||
-      batchRunning ||
+      (detectSessionActive && !handledDetectJobId) ||
       (state.detect_status === "completed" &&
         state.detect_job_id &&
-        handledDetectJobId !== state.detect_job_id);
+        handledDetectJobId !== state.detect_job_id &&
+        !detectSessionActive);
 
     if (jobId && needsDetectUI) {
       const outcome = await updateDetectUI(jobId);
@@ -935,9 +1354,11 @@ async function poll() {
         stopPolling();
         return;
       }
+    } else if (isDetectBusy(state) && state.detect_status === "running") {
+      showDetectProgressFromState(state);
     }
 
-    if (!needsDetectUI && !activeDetectJobId && !batchRunning) {
+    if (!isDetectBusy(state) && !batchRunning) {
       stopPolling();
     }
   } catch (err) {
@@ -959,14 +1380,7 @@ function stopPolling() {
 }
 
 function needsPolling(state) {
-  return (
-    state.train_status === "running" ||
-    state.detect_status === "running" ||
-    (state.detect_queue_pending || 0) > 0 ||
-    ((state.detect_batch_total || 0) > (state.detect_batch_done || 0) &&
-      state.detect_status !== "error") ||
-    !!activeDetectJobId
-  );
+  return isTrainActive(state) || isDetectBusy(state);
 }
 
 els.cvatZip.addEventListener("change", () => {
@@ -994,9 +1408,16 @@ els.detectFrameMore.addEventListener("click", () => {
 
 els.resetTimelineBtn?.addEventListener("click", resetTimeline);
 
+els.frameResults.addEventListener("click", handleTimelineFrameClick);
 els.frameResults.addEventListener("dblclick", handleFrameCardDblClick);
+els.timelineViewport?.addEventListener("click", handleTimelineFrameClick);
 els.timelineViewport?.addEventListener("dblclick", handleFrameCardDblClick);
 els.importFrameResults.addEventListener("dblclick", handleFrameCardDblClick);
+els.frameLightboxGallery?.addEventListener("click", (event) => {
+  const item = event.target.closest(".lightbox-gallery-item");
+  if (!item) return;
+  showLightboxFrame(Number(item.dataset.frameIndex) || 0);
+});
 
 els.timelineZoomIn?.addEventListener("click", () => {
   setTimelineZoom(timelineZoom * TIMELINE_ZOOM_STEP);
@@ -1026,12 +1447,47 @@ window.addEventListener("resize", () => {
 });
 
 els.frameLightboxClose?.addEventListener("click", closeFrameLightbox);
+els.frameLightboxBack?.addEventListener("click", () => {
+  if (lightboxSegment && lightboxFrames.length) {
+    openLightboxGallery(lightboxSegment, lightboxFrames);
+  }
+});
+els.frameLightboxZoomIn?.addEventListener("click", () => {
+  setLightboxViewerZoom(lightboxViewerZoom * FRAME_VIEWER_ZOOM_STEP);
+});
+els.frameLightboxZoomOut?.addEventListener("click", () => {
+  setLightboxViewerZoom(lightboxViewerZoom / FRAME_VIEWER_ZOOM_STEP);
+});
+els.frameLightboxZoomReset?.addEventListener("click", resetLightboxViewerTransform);
+els.frameLightboxPrev?.addEventListener("click", () => showLightboxFrame(lightboxFrameIndex - 1));
+els.frameLightboxNext?.addEventListener("click", () => showLightboxFrame(lightboxFrameIndex + 1));
+els.frameLightboxViewport?.addEventListener("wheel", handleLightboxViewportWheel, { passive: false });
+els.frameLightboxViewport?.addEventListener("pointerdown", handleLightboxViewportPointerDown);
+els.frameLightboxViewport?.addEventListener("pointermove", handleLightboxViewportPointerMove);
+els.frameLightboxViewport?.addEventListener("pointerup", handleLightboxViewportPointerUp);
+els.frameLightboxViewport?.addEventListener("pointercancel", handleLightboxViewportPointerUp);
 els.frameLightbox?.addEventListener("click", (event) => {
   if (event.target === els.frameLightbox) closeFrameLightbox();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !els.frameLightbox?.classList.contains("hidden")) {
+  if (els.frameLightbox?.classList.contains("hidden")) return;
+  if (event.key === "Escape") {
     closeFrameLightbox();
+    return;
+  }
+  if (els.frameLightboxViewer?.classList.contains("hidden")) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    showLightboxFrame(lightboxFrameIndex - 1);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    showLightboxFrame(lightboxFrameIndex + 1);
+  } else if (event.key === "+" || event.key === "=") {
+    setLightboxViewerZoom(lightboxViewerZoom * FRAME_VIEWER_ZOOM_STEP);
+  } else if (event.key === "-") {
+    setLightboxViewerZoom(lightboxViewerZoom / FRAME_VIEWER_ZOOM_STEP);
+  } else if (event.key === "0") {
+    resetLightboxViewerTransform();
   }
 });
 
@@ -1076,7 +1532,7 @@ els.trainBtn.addEventListener("click", async () => {
         batch: Number(els.batch.value),
       }),
     });
-    updateStopButtons({ train_status: "running" });
+    updateStopButtons({ ...lastPipelineState, train_status: "running" });
     startPolling();
   } catch (err) {
     setStatus(els.trainStatus, err.message, "error");
@@ -1084,11 +1540,107 @@ els.trainBtn.addEventListener("click", async () => {
   }
 });
 
+function trainRequestBody() {
+  return {
+    epochs: Number(els.epochs.value),
+    batch: Number(els.batch.value),
+  };
+}
+
+els.resetTrainBtn?.addEventListener("click", async () => {
+  if (
+    !confirm(
+      "학습된 모델 파일과 YOLO 학습 기록을 삭제할까요?\n다음 학습은 YOLO 기본 가중치(yolo11n)부터 새로 시작합니다.",
+    )
+  ) {
+    return;
+  }
+  els.resetTrainBtn.disabled = true;
+  els.resetAndTrainBtn.disabled = true;
+  try {
+    const result = await api("/api/pipeline/train/reset", { method: "POST" });
+    const count = result.deleted?.length || 0;
+    lastPipelineState = {
+      ...(lastPipelineState || {}),
+      train_status: "idle",
+      train_weights: null,
+      train_error: null,
+      train_progress: null,
+      train_epoch: 0,
+      train_epochs: 0,
+      train_progress_pct: 0,
+    };
+    renderPipelineState(lastPipelineState);
+    setStatus(els.trainStatus, `모델 초기화 완료 · 삭제 ${count}개`, "ok");
+    updateDetectButtonState();
+  } catch (err) {
+    setStatus(els.trainStatus, err.message, "error");
+  } finally {
+    els.resetTrainBtn.disabled = false;
+    els.resetAndTrainBtn.disabled = false;
+  }
+});
+
+els.resetAndTrainBtn?.addEventListener("click", async () => {
+  if (
+    !confirm(
+      "학습된 모델을 삭제하고 YOLO 기본 가중치부터 새로 학습을 시작할까요?",
+    )
+  ) {
+    return;
+  }
+  els.resetAndTrainBtn.disabled = true;
+  els.resetTrainBtn.disabled = true;
+  els.trainBtn.disabled = true;
+  setStatus(els.trainStatus, "모델 초기화 후 학습 시작...");
+  setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, 0, "준비 중...");
+  try {
+    await api("/api/pipeline/train/reset-and-start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(trainRequestBody()),
+    });
+    lastPipelineState = {
+      ...(lastPipelineState || {}),
+      train_status: "running",
+      train_weights: null,
+      train_error: null,
+    };
+    updateStopButtons(lastPipelineState);
+    updateDetectButtonState();
+    startPolling();
+  } catch (err) {
+    setStatus(els.trainStatus, err.message, "error");
+    els.trainBtn.disabled = lastPipelineState?.import_status === "completed";
+  } finally {
+    els.resetAndTrainBtn.disabled = false;
+    els.resetTrainBtn.disabled = false;
+  }
+});
+
 els.stopTrainBtn?.addEventListener("click", async () => {
   els.stopTrainBtn.disabled = true;
   setStatus(els.trainStatus, "학습 중지 요청...");
   try {
-    await api("/api/pipeline/train/stop", { method: "POST" });
+    const result = await api("/api/pipeline/train/stop", { method: "POST" });
+    if (result.cancelled) {
+      lastPipelineState = {
+        ...(lastPipelineState || {}),
+        train_status: result.reason === "stale_recovered" ? "cancelled" : "running",
+        train_progress: result.reason === "stale_recovered" ? "cancelled" : "cancelling",
+        train_error:
+          result.reason === "stale_recovered"
+            ? "학습 세션이 끊겨 중지됨 (서버 재시작 등)"
+            : lastPipelineState?.train_error,
+      };
+      if (result.reason === "stale_recovered") {
+        renderPipelineState(lastPipelineState);
+      }
+      updateStopButtons(lastPipelineState);
+    } else {
+      setStatus(els.trainStatus, "진행 중인 학습이 없습니다.", "error");
+      updateStopButtons();
+    }
     startPolling();
   } catch (err) {
     setStatus(els.trainStatus, err.message, "error");
@@ -1133,6 +1685,14 @@ els.stopDetectBtn?.addEventListener("click", async () => {
 
 els.lakeDiscoverBtn?.addEventListener("click", discoverLakeVideos);
 
+els.lakeProfile?.addEventListener("change", async () => {
+  lakeProfileId = els.lakeProfile.value;
+  lakeVideosReady = 0;
+  setStatus(els.lakeDiscoverStatus, "");
+  await loadLakeConfig(lakeProfileId);
+  updateDetectButtonState();
+});
+
 document.querySelectorAll('input[name="detectSource"]').forEach((input) => {
   input.addEventListener("change", () => {
     lakeVideosReady = 0;
@@ -1148,9 +1708,6 @@ els.detectVideo?.addEventListener("change", updateDetectButtonState);
 els.detectBtn.addEventListener("click", async () => {
   detectSourceMode = getDetectSourceMode();
   els.detectBtn.disabled = true;
-  detectSession += 1;
-  handledDetectJobId = null;
-  detectStopRequested = false;
 
   if (detectSourceMode === "lake") {
     if (lakeVideosReady <= 0) {
@@ -1162,15 +1719,7 @@ els.detectBtn.addEventListener("click", async () => {
     }
     const range = readLakeRange();
     const batchTotal = lakeVideosReady;
-    setStatus(els.detectStatus, `${batchTotal}개 Lake 비디오 탐지 시작...`);
-    lastPipelineState = {
-      ...(lastPipelineState || {}),
-      detect_status: "running",
-      detect_batch_total: batchTotal,
-      detect_batch_done: 0,
-      detect_queue_pending: Math.max(0, batchTotal - 1),
-    };
-    showDetectProgress(0, 0, 0, 0, lastPipelineState);
+    beginDetectSession(batchTotal);
     try {
       const result = await api("/api/pipeline/detect/lake", {
         method: "POST",
@@ -1182,10 +1731,11 @@ els.detectBtn.addEventListener("click", async () => {
           check_exists: true,
         }),
       });
-      startDetectPolling(result, batchTotal);
-    updateStopButtons({ detect_status: "running", detect_batch_total: batchTotal });
+      finishDetectStart(result, batchTotal);
     } catch (err) {
       activeDetectJobId = null;
+      endDetectSession();
+      stopPolling();
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
       setStatus(els.detectStatus, err.message, "error");
       updateDetectButtonState();
@@ -1205,21 +1755,15 @@ els.detectBtn.addEventListener("click", async () => {
   }
   form.append("frame_stride", els.frameStride.value);
   form.append("confidence", els.confidence.value);
-  setStatus(els.detectStatus, `${files.length}개 비디오 탐지 시작...`);
-  lastPipelineState = {
-    ...(lastPipelineState || {}),
-    detect_status: "running",
-    detect_batch_total: files.length,
-    detect_batch_done: 0,
-    detect_queue_pending: Math.max(0, files.length - 1),
-  };
-  showDetectProgress(0, 0, 0, 0, lastPipelineState);
+  beginDetectSession(files.length);
+  setStatus(els.detectStatus, `비디오 업로드 중... (${files.length}개)`);
   try {
     const result = await api("/api/pipeline/detect", { method: "POST", body: form });
-    startDetectPolling(result, files.length);
-    updateStopButtons({ detect_status: "running", detect_batch_total: files.length });
+    finishDetectStart(result, files.length);
   } catch (err) {
     activeDetectJobId = null;
+    endDetectSession();
+    stopPolling();
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
     setStatus(els.detectStatus, err.message, "error");
     updateDetectButtonState();

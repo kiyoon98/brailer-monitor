@@ -5,8 +5,12 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
-# JJR-102283_stream04_260201_040016.mp4 -> 2026-02-01 04:00:00
-_VIDEO_TIME_RE = re.compile(r"_(\d{6})_(\d{6})(?:\.|$)")
+# {prefix}_YYMMDD_HHMMSS.mp4 — prefix is arbitrary; time block is always last.
+# HHMM is the 5-minute slot start; SS (last two digits) is a file suffix, not seconds.
+# Examples:
+#   JJR-102283_stream04_260201_040016.mp4  -> 2026-02-01 04:00:00
+#   LAKE_AURORA_stream03_251017_004023.mp4 -> 2025-10-17 00:40:00
+_VIDEO_TIME_RE = re.compile(r"_(\d{6})_(\d{6})$")
 
 
 def parse_video_start_time(filename: str) -> datetime | None:
@@ -19,13 +23,13 @@ def parse_video_start_time(filename: str) -> datetime | None:
     if not match:
         return None
 
-    yymmdd, hhmmxx = match.groups()
+    yymmdd, hhmmss = match.groups()
     try:
         year = 2000 + int(yymmdd[:2])
         month = int(yymmdd[2:4])
         day = int(yymmdd[4:6])
-        hour = int(hhmmxx[:2])
-        minute = int(hhmmxx[2:4])
+        hour = int(hhmmss[:2])
+        minute = int(hhmmss[2:4])
         return datetime(year, month, day, hour, minute, 0)
     except ValueError:
         return None

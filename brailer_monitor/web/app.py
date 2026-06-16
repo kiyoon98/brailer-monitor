@@ -13,7 +13,7 @@ import cv2
 
 from ..cvat_import import inspect_cvat
 from ..dataset_preview import list_dataset_frames, render_dataset_preview
-from ..lake_video_source import discover_videos_in_range, list_candidate_videos, load_lake_video_config
+from ..lake_video_source import discover_videos_in_range, list_candidate_videos, list_lake_profile_summaries, load_lake_video_config
 from .annotation import AnnotationManager
 from .detect_pipeline import DetectPipelineManager
 
@@ -41,6 +41,7 @@ class CaptureRequest(BaseModel):
 
 
 class LakeRangeRequest(BaseModel):
+    profile: str | None = None
     start_month: int = Field(ge=1, le=12)
     start_day: int = Field(ge=1, le=31)
     start_hour: int = Field(ge=0, le=23)
@@ -48,7 +49,7 @@ class LakeRangeRequest(BaseModel):
     end_day: int = Field(ge=1, le=31)
     end_hour: int = Field(ge=0, le=23)
     frame_stride: int = Field(default=5, ge=1)
-    confidence: float = Field(default=0.35, ge=0.05, le=1.0)
+    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
     device: str | int = 0
     check_exists: bool = True
 
@@ -200,6 +201,29 @@ async def pipeline_train_stop() -> dict:
     return pipeline.cancel_training()
 
 
+@app.post("/api/pipeline/train/reset")
+async def pipeline_train_reset() -> dict:
+    try:
+        return pipeline.reset_training()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/pipeline/train/reset-and-start")
+async def pipeline_train_reset_and_start(body: TrainRequest) -> dict:
+    try:
+        return pipeline.reset_and_start_training(
+            epochs=body.epochs,
+            batch=body.batch,
+            imgsz=body.imgsz,
+            device=body.device,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/pipeline/detect/stop")
 async def pipeline_detect_stop() -> dict:
     return pipeline.cancel_detection()
@@ -209,7 +233,7 @@ async def pipeline_detect_stop() -> dict:
 async def pipeline_detect(
     files: list[UploadFile] = File(...),
     frame_stride: int = Form(5),
-    confidence: float = Form(0.35),
+    confidence: float = Form(0.6),
     device: str | int = Form(0),
 ) -> dict:
     if not files:
@@ -248,19 +272,31 @@ async def pipeline_detect(
 
 
 @app.get("/api/pipeline/lake-videos/config")
-async def pipeline_lake_video_config() -> dict:
-    config = load_lake_video_config(CONFIG_DIR / "lake_video.json")
+async def pipeline_lake_video_config(profile: str | None = None) -> dict:
+    config_path = CONFIG_DIR / "lake_video.json"
+    profiles = list_lake_profile_summaries(config_path)
+    config = load_lake_video_config(config_path, profile=profile)
     return {
+        "profile": config.profile_id,
+        "profiles": profiles,
         "base_url": config.base_url,
         "file_prefix": config.file_prefix,
         "year": config.year,
         "minute_slots": list(config.minute_slots),
+        "second_suffixes": list(config.second_suffixes),
     }
+
+
+def _load_lake_config(profile: str | None):
+    try:
+        return load_lake_video_config(CONFIG_DIR / "lake_video.json", profile=profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/pipeline/lake-videos/discover")
 async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
-    config = load_lake_video_config(CONFIG_DIR / "lake_video.json")
+    config = _load_lake_config(body.profile)
     try:
         candidates = list_candidate_videos(
             start_month=body.start_month,
@@ -287,6 +323,7 @@ async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
     return {
         "candidate_count": len(candidates),
         "found_count": len(videos),
+        "profile": config.profile_id,
         "base_url": config.base_url,
         "videos": videos[:24],
         "sample_missing": max(0, len(candidates) - len(videos)),
@@ -295,7 +332,7 @@ async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
 
 @app.post("/api/pipeline/detect/lake")
 async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
-    config = load_lake_video_config(CONFIG_DIR / "lake_video.json")
+    config = _load_lake_config(body.profile)
     try:
         videos = discover_videos_in_range(
             start_month=body.start_month,

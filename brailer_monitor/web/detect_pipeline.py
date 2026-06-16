@@ -21,7 +21,7 @@ from ..detect_timeline import (
     timeline_summary,
 )
 from ..lake_video_source import download_video
-from ..train import TrainingCancelled, load_task_type, run_training
+from ..train import TrainingCancelled, load_task_type, reset_training_artifacts, run_training
 from ..video_detect import DetectionCancelled, detect_video
 from ..video_time import parse_video_start_time
 
@@ -131,13 +131,68 @@ class DetectPipelineManager:
     def cancel_training(self) -> dict[str, Any]:
         with self._lock:
             state = self._load_state()
-            if state.train_status != "running" or not self._train_thread_alive():
+            if state.train_status not in ("running", "cancelling"):
                 return {"cancelled": False, "reason": "not_running"}
+            if not self._train_thread_alive():
+                self._finish_stale_train()
+                return {"cancelled": True, "reason": "stale_recovered"}
 
             self._train_cancel.set()
             state.train_progress = "cancelling"
             self._save_state(state)
             return {"cancelled": True}
+
+    def _finish_stale_train(self) -> None:
+        state = self._load_state()
+        state.train_status = "cancelled"
+        state.train_progress = "cancelled"
+        state.train_error = "학습 세션이 끊겨 중지됨 (서버 재시작 등)"
+        self._save_state(state)
+
+    def _recover_stale_train(self) -> None:
+        state = self._load_state()
+        if state.train_status not in ("running", "cancelling"):
+            return
+        if self._train_thread_alive():
+            return
+        with self._lock:
+            state = self._load_state()
+            if state.train_status in ("running", "cancelling") and not self._train_thread_alive():
+                logger.warning("Recovering stale train_status=%s (thread not alive)", state.train_status)
+                self._finish_stale_train()
+
+    def reset_training(self) -> dict[str, Any]:
+        with self._lock:
+            state = self._load_state()
+            if state.train_status == "running" and self._train_thread_alive():
+                raise RuntimeError("학습이 진행 중입니다. 먼저 중지하세요.")
+            if _detect_is_active(state, threads=self._detect_threads):
+                raise RuntimeError("탐지가 진행 중입니다. 먼저 중지하세요.")
+
+            project_root = self.config_dir.parent
+            deleted = reset_training_artifacts(project_root=project_root)
+
+            state.train_status = "idle"
+            state.train_progress = None
+            state.train_epoch = 0
+            state.train_epochs = 0
+            state.train_progress_pct = 0.0
+            state.train_weights = None
+            state.train_error = None
+            self._save_state(state)
+            return {"reset": True, "deleted": deleted}
+
+    def reset_and_start_training(
+        self,
+        *,
+        epochs: int = 50,
+        batch: int = 8,
+        imgsz: int = 640,
+        device: str | int = 0,
+    ) -> dict[str, Any]:
+        reset_info = self.reset_training()
+        started = self.start_training(epochs=epochs, batch=batch, imgsz=imgsz, device=device)
+        return {**reset_info, **started}
 
     def _finish_detection_cancelled(self) -> None:
         state = self._load_state()
@@ -161,10 +216,50 @@ class DetectPipelineManager:
             if state.detect_status == "cancelling":
                 self._finish_detection_cancelled()
 
+    def _detect_threads_alive(self) -> bool:
+        return any(thread.is_alive() for thread in self._detect_threads.values())
+
+    def _detect_session_alive(self) -> bool:
+        return self._detect_threads_alive() or bool(self._detect_queue)
+
+    def _finish_stale_detect(self) -> None:
+        state = self._load_state()
+        state.detect_status = "cancelled"
+        state.detect_queue_pending = 0
+        state.detect_error = "탐지 세션이 끊겨 중지됨 (서버 재시작 등)"
+        state.detect_batch_total = self._batch_total
+        state.detect_batch_done = self._batch_done
+        summary = timeline_summary(self._timeline_path)
+        state.detect_timeline_events = summary["segment_count"]
+        self._save_state(state)
+
+    def _recover_stale_detect(self) -> None:
+        state = self._load_state()
+        if state.detect_status not in ("running", "cancelling"):
+            return
+        if self._detect_session_alive():
+            return
+        with self._lock:
+            state = self._load_state()
+            if state.detect_status in ("running", "cancelling") and not self._detect_session_alive():
+                logger.warning("Recovering stale detect_status=%s (no active threads/queue)", state.detect_status)
+                self._detect_queue.clear()
+                self._finish_stale_detect()
+
     def _load_state(self) -> PipelineState:
         if not self._state_path.exists():
             return PipelineState(updated_at=_now_iso())
-        data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        raw = self._state_path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data, _ = json.JSONDecoder().raw_decode(raw.strip())
+            logger.warning("Recovered corrupted pipeline state from %s", self._state_path)
+            allowed = {item.name for item in fields(PipelineState)}
+            filtered = {key: value for key, value in data.items() if key in allowed}
+            recovered = PipelineState(**filtered)
+            self._save_state(recovered)
+            return recovered
         allowed = {item.name for item in fields(PipelineState)}
         filtered = {key: value for key, value in data.items() if key in allowed}
         if "updated_at" not in filtered:
@@ -173,10 +268,15 @@ class DetectPipelineManager:
 
     def _save_state(self, state: PipelineState) -> None:
         state.updated_at = _now_iso()
-        self._state_path.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
+        payload = json.dumps(state.to_dict(), indent=2, ensure_ascii=False)
+        temp_path = self._state_path.with_suffix(".json.tmp")
+        temp_path.write_text(payload, encoding="utf-8")
+        temp_path.replace(self._state_path)
 
     def get_state(self) -> dict[str, Any]:
         self._recover_stale_cancel()
+        self._recover_stale_train()
+        self._recover_stale_detect()
         state = self._load_state()
         payload = state.to_dict()
         meta_path = self.dataset_root / "import_meta.json"
@@ -276,7 +376,10 @@ class DetectPipelineManager:
         state.train_epoch = epoch
         state.train_epochs = total_epochs
         state.train_progress_pct = epoch / max(total_epochs, 1)
-        state.train_progress = f"epoch {epoch}/{total_epochs}"
+        if self._train_cancel.is_set() or state.train_progress == "cancelling":
+            state.train_progress = "cancelling"
+        else:
+            state.train_progress = f"epoch {epoch}/{total_epochs}"
         self._save_state(state)
 
     def _run_training(self, epochs: int, batch: int, imgsz: int, device: str | int) -> None:
@@ -334,7 +437,7 @@ class DetectPipelineManager:
         *,
         model_path: Path | None = None,
         frame_stride: int = 5,
-        confidence: float = 0.35,
+        confidence: float = 0.6,
         device: str | int = 0,
     ) -> DetectJob | dict[str, Any]:
         return self.start_detection_batch(
@@ -367,7 +470,7 @@ class DetectPipelineManager:
         *,
         model_path: Path | None = None,
         frame_stride: int = 5,
-        confidence: float = 0.35,
+        confidence: float = 0.6,
         device: str | int = 0,
     ) -> dict[str, Any]:
         if not videos:
@@ -382,11 +485,12 @@ class DetectPipelineManager:
             raise FileNotFoundError(f"Model not found: {model_path}. Train first.")
 
         self._clear_detection_cancel()
+        self._recover_stale_detect()
         prepared_videos = self._prepare_batch_videos(videos)
         queued_jobs: list[dict[str, Any]] = []
         with self._lock:
             state = self._load_state()
-            running = state.detect_status == "running"
+            running = state.detect_status == "running" and self._detect_session_alive()
 
             if not running:
                 self._batch_total = len(prepared_videos)
@@ -492,6 +596,12 @@ class DetectPipelineManager:
         state.detect_queue_pending = len(self._detect_queue)
         state.detect_batch_total = self._batch_total
         state.detect_batch_done = self._batch_done
+        planned = self._planned_frame_count(target_video, frame_stride)
+        job.total_frames = planned
+        self._save_job(job)
+        state.detect_total_frames = planned
+        state.detect_processed_frames = 0
+        state.detect_progress_pct = 0.0
         self._save_state(state)
 
         thread = threading.Thread(

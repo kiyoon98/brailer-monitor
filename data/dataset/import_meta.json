@@ -1,18 +1,18 @@
 {
-  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/annotations.xml",
+  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/lake_win_stream04_260310_2020.zip",
   "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/JJR-102283_stream04_260310_202016.mp4",
   "frame_source": "video",
   "task_type": "segment",
   "class_names": [
-    "brailer"
+    "win"
   ],
   "label_summary": {
     "class_names": [
-      "brailer"
+      "win"
     ],
     "objects": [
       {
-        "name": "brailer",
+        "name": "win",
         "color": "#7c6453",
         "cvat_type": "any",
         "annotation_count": 97,

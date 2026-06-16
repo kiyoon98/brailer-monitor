@@ -35,8 +35,12 @@
         <label>Epochs <input id="epochs" type="number" value="50" min="1" /></label>
         <label>Batch <input id="batch" type="number" value="8" min="1" /></label>
       </div>
-      <button id="trainBtn" type="button" disabled>학습 시작</button>
-      <button id="stopTrainBtn" type="button" class="secondary danger hidden">학습 중지</button>
+      <div class="row train-actions">
+        <button id="trainBtn" type="button" disabled>학습 시작</button>
+        <button id="resetTrainBtn" type="button" class="secondary danger hidden">모델 초기화</button>
+        <button id="resetAndTrainBtn" type="button" class="secondary danger hidden">초기화 후 학습</button>
+        <button id="stopTrainBtn" type="button" class="secondary danger hidden">학습 중지</button>
+      </div>
       <div id="trainProgressWrap" class="progress-wrap hidden">
         <div class="progress-bar"><div id="trainProgressBar" class="progress-fill"></div></div>
         <span id="trainProgressText" class="progress-text"></span>
@@ -46,7 +50,7 @@
 
     <section class="panel full">
       <h2>3. 비디오 탐지</h2>
-      <p class="hint">파일명 예: JJR-102283_stream04_260201_040016.mp4 → 2026-02-01 04:00 시작</p>
+      <p class="hint">파일명: <code>{접두어}_YYMMDD_HHMMSS.mp4</code> — YYMMDD·HHMM이 5분 구간 시작 시각 (끝 2자리는 파일별 접미사)</p>
       <div class="detect-source">
         <label><input type="radio" name="detectSource" value="upload" checked /> 파일 업로드</label>
         <label><input type="radio" name="detectSource" value="lake" /> Lake 저장소 (내부 네트워크)</label>
@@ -57,6 +61,9 @@
         </label>
       </div>
       <div id="detectLakeSection" class="hidden">
+        <label>영상 프로필
+          <select id="lakeProfile"></select>
+        </label>
         <p id="lakeBaseUrl" class="hint"></p>
         <div class="row lake-range">
           <span class="range-label">시작</span>
@@ -75,7 +82,7 @@
       </div>
       <div class="row">
         <label>프레임 간격 <input id="frameStride" type="number" value="5" min="1" /></label>
-        <label>Confidence <input id="confidence" type="number" value="0.35" min="0.05" max="1" step="0.05" /></label>
+        <label>Confidence <input id="confidence" type="number" value="0.6" min="0.05" max="1" step="0.05" /></label>
       </div>
       <div class="row detect-actions">
         <button id="detectBtn" type="button" disabled>탐지 시작</button>
@@ -111,7 +118,7 @@
 
     <section class="panel full">
       <h2>탐지 타임라인 <span id="frameCount" class="badge">0</span></h2>
-      <p class="timeline-legend hint">백분율 = YOLO 신뢰도(해당 클래스일 확률) · 면적 = 탐지 마스크/박스 안쪽 픽셀 수</p>
+      <p class="timeline-legend hint">백분율 = YOLO 신뢰도 · 면적 = 탐지 픽셀 수 · 썸네일 클릭: 확대 · 더블클릭: 세그먼트 전체</p>
       <div id="timelineAxis" class="timeline-axis hidden">
         <div class="timeline-toolbar">
           <span class="toolbar-label">타임라인</span>
@@ -141,11 +148,29 @@
     <button id="frameLightboxClose" type="button" class="lightbox-close" aria-label="닫기">✕</button>
     <div class="lightbox-content">
       <div id="frameLightboxGallery" class="lightbox-gallery hidden"></div>
-      <img id="frameLightboxImg" alt="" />
+      <div id="frameLightboxViewer" class="lightbox-viewer hidden">
+        <div class="lightbox-viewer-toolbar">
+          <button id="frameLightboxBack" type="button" class="secondary hidden">← 갤러리</button>
+          <span class="lightbox-toolbar-spacer"></span>
+          <button id="frameLightboxZoomOut" type="button" class="secondary" title="축소">−</button>
+          <span id="frameLightboxZoomLabel" class="lightbox-zoom-label">100%</span>
+          <button id="frameLightboxZoomIn" type="button" class="secondary" title="확대">+</button>
+          <button id="frameLightboxZoomReset" type="button" class="secondary">맞춤</button>
+          <span class="lightbox-toolbar-hint">휠 확대 · 드래그 이동</span>
+        </div>
+        <div id="frameLightboxViewport" class="lightbox-viewport">
+          <img id="frameLightboxImg" alt="" draggable="false" />
+        </div>
+        <div class="lightbox-viewer-nav">
+          <button id="frameLightboxPrev" type="button" class="secondary" aria-label="이전 프레임">‹</button>
+          <span id="frameLightboxCounter" class="lightbox-counter">1 / 1</span>
+          <button id="frameLightboxNext" type="button" class="secondary" aria-label="다음 프레임">›</button>
+        </div>
+      </div>
       <div id="frameLightboxMeta" class="lightbox-meta"></div>
     </div>
   </div>
 
-  <script src="/static/detect.js?v=23"></script>
+  <script src="/static/detect.js?v=33"></script>
 </body>
 </html>

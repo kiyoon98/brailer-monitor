@@ -34,6 +34,48 @@ def load_task_type(dataset_root: Path | None = None) -> str:
     return "segment"
 
 
+def deployment_weights_path(task_type: str, *, project_root: Path | None = None) -> Path:
+    root = project_root or Path.cwd()
+    name = _default_weights_name(task_type)
+    return root / "models" / name
+
+
+def reset_training_artifacts(*, project_root: Path | None = None) -> list[str]:
+    """Remove trained weights and YOLO run folders so the next train starts fresh."""
+    import shutil
+
+    root = project_root or Path.cwd()
+    deleted: list[str] = []
+
+    models_dir = root / "models"
+    for name in ("brailer_seg.pt", "brailer_detect.pt"):
+        path = models_dir / name
+        if path.exists():
+            path.unlink()
+            deleted.append(str(path.resolve()))
+
+    for runs_root in (root / "runs" / "segment", root / "runs" / "detect"):
+        if not runs_root.exists():
+            continue
+        run_dirs = sorted(
+            (
+                path
+                for path in runs_root.rglob("*")
+                if path.is_dir()
+                and (path.name.startswith("brailer_seg") or path.name.startswith("brailer_detect"))
+            ),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for path in run_dirs:
+            if not path.exists():
+                continue
+            shutil.rmtree(path)
+            deleted.append(str(path.resolve()))
+
+    return deleted
+
+
 def run_training(
     dataset_yaml: Path,
     base_model: str | None = None,
@@ -75,16 +117,32 @@ def run_training(
     model = YOLO(base_model)
     if on_epoch_end is not None or should_cancel is not None:
 
-        def _epoch_callback(trainer: object) -> None:
+        def _report_epoch_progress(trainer: object) -> None:
+            if on_epoch_end is None:
+                return
+            epoch = int(getattr(trainer, "epoch", 0)) + 1
+            total = int(getattr(trainer, "epochs", epochs))
+            on_epoch_end(epoch, total)
+
+        def _epoch_start_callback(trainer: object) -> None:
             if should_cancel and should_cancel():
                 setattr(trainer, "stop", True)
                 return
-            if on_epoch_end is not None:
-                epoch = int(getattr(trainer, "epoch", 0)) + 1
-                total = int(getattr(trainer, "epochs", epochs))
-                on_epoch_end(epoch, total)
+            _report_epoch_progress(trainer)
 
-        model.add_callback("on_train_epoch_end", _epoch_callback)
+        def _epoch_end_callback(trainer: object) -> None:
+            if should_cancel and should_cancel():
+                setattr(trainer, "stop", True)
+                return
+            _report_epoch_progress(trainer)
+
+        def _batch_callback(trainer: object) -> None:
+            if should_cancel and should_cancel():
+                setattr(trainer, "stop", True)
+
+        model.add_callback("on_train_epoch_start", _epoch_start_callback)
+        model.add_callback("on_train_epoch_end", _epoch_end_callback)
+        model.add_callback("on_train_batch_end", _batch_callback)
 
     logger.info(
         "Starting training: dataset=%s base=%s epochs=%d",
