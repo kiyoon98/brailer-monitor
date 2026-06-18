@@ -1,21 +1,31 @@
 {
-  "default_profile": "jjr",
-  "profiles": {
-    "jjr": {
-      "label": "JJR-102283 stream04",
-      "base_url": "http://10.2.10.158:8041/media/lake_win/2026_decrypted/",
-      "file_prefix": "JJR-102283_stream04",
-      "year": 2026,
-      "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
-      "second_suffixes": ["16"]
+  "base_host": "http://10.2.10.158:8041/media/",
+  "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+  "components": {
+    "media": {
+      "label": "미디어 폴더",
+      "default": "lake_win",
+      "options": ["lake_win", "lake_aurora", "lake_dream", "seibu"]
     },
-    "lake_aurora": {
-      "label": "LAKE AURORA stream03",
-      "base_url": "http://10.2.10.158:8041/media/lake_win/2025_decrypted/",
-      "file_prefix": "LAKE_AURORA_stream03",
-      "year": 2025,
-      "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
-      "second_suffixes": ["23"]
+    "year_folder": {
+      "label": "연도 폴더",
+      "default": "2026_decrypted",
+      "options": ["2025_decrypted", "2026_decrypted", "2027_decrypted"]
+    },
+    "vessel": {
+      "label": "선박",
+      "default": "JJR-102283",
+      "options": ["JJR-102283", "LAKE_AURORA", "JJR-211056", "seibu"]
+    },
+    "stream": {
+      "label": "스트림",
+      "default": "stream04",
+      "options": ["stream01", "stream02", "stream03", "stream04"]
+    },
+    "suffix": {
+      "label": "초 접미사",
+      "default": "16",
+      "options": ["16", "23"]
     }
   }
 }

@@ -92,9 +92,7 @@ def _teardrop_polygon_norm(
 
 class _EmptyMasks:
     def __init__(self) -> None:
-        import torch
-
-        self.data = torch.zeros((0, 1, 1))
+        self.data = []
 
 
 class _SamResult:

@@ -37,6 +37,14 @@ def _format_timestamp(base_seconds: float) -> str:
     return f"PT{hours:02d}H{minutes:02d}M{seconds:02d}.{frac:03d}S"
 
 
+def _is_brailer_detection(class_name: str, class_id: int) -> bool:
+    """Return true only for brailer detections, not arbitrary high-confidence classes."""
+    normalized = class_name.strip().lower()
+    if "brailer" in normalized:
+        return True
+    return class_id == 0 and normalized in {"", "0", "class_0"}
+
+
 def analyze_video(
     video_path: Path,
     calibration: CameraCalibration,
@@ -79,7 +87,7 @@ def analyze_video(
             brailer_detections = [
                 d
                 for d in detections
-                if "brailer" in d.class_name.lower() or d.class_id == 0 or d.confidence >= capacity.min_detection_confidence
+                if _is_brailer_detection(d.class_name, d.class_id)
             ]
 
             crossing = transfer_counter.process(brailer_detections)

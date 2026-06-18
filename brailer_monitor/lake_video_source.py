@@ -18,6 +18,35 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "lake_vid
 DEFAULT_MINUTE_SLOTS = tuple(range(0, 60, 5))
 DEFAULT_SECOND_SUFFIXES = ("16",)
 
+DEFAULT_BASE_HOST = "http://10.2.10.158:8041/media/"
+DEFAULT_LAKE_COMPONENTS: dict[str, dict[str, Any]] = {
+    "media": {
+        "label": "미디어 폴더",
+        "default": "lake_win",
+        "options": ["lake_win", "lake_aurora", "lake_dream", "seibu"],
+    },
+    "year_folder": {
+        "label": "연도 폴더",
+        "default": "2026_decrypted",
+        "options": ["2025_decrypted", "2026_decrypted", "2027_decrypted"],
+    },
+    "vessel": {
+        "label": "선박",
+        "default": "JJR-102283",
+        "options": ["JJR-102283", "LAKE_AURORA", "JJR-211056", "seibu"],
+    },
+    "stream": {
+        "label": "스트림",
+        "default": "stream04",
+        "options": ["stream01", "stream02", "stream03", "stream04"],
+    },
+    "suffix": {
+        "label": "초 접미사",
+        "default": "16",
+        "options": ["16", "23"],
+    },
+}
+
 
 @dataclass(frozen=True)
 class LakeVideoConfig:
@@ -116,6 +145,80 @@ def load_lake_video_config(path: Path | None = None, *, profile: str | None = No
         return LakeVideoConfig.from_dict(profile_id, profiles[profile_id])
 
     return LakeVideoConfig.from_dict("default", payload)
+
+
+def load_lake_component_spec(path: Path | None = None) -> dict[str, Any]:
+    """Return the selectable URL components (media/year/vessel/stream/suffix)."""
+    payload = _read_config_payload(path or DEFAULT_CONFIG_PATH)
+    base_host = str(payload.get("base_host", DEFAULT_BASE_HOST)).strip()
+    if base_host and not base_host.endswith("/"):
+        base_host += "/"
+    if not base_host:
+        base_host = DEFAULT_BASE_HOST
+    raw_components = payload.get("components")
+    components = raw_components if isinstance(raw_components, dict) and raw_components else DEFAULT_LAKE_COMPONENTS
+    minute_slots = [int(value) for value in payload.get("minute_slots", DEFAULT_MINUTE_SLOTS)]
+    return {
+        "base_host": base_host,
+        "components": components,
+        "minute_slots": minute_slots,
+    }
+
+
+def _selected_or_default(component: dict[str, Any], value: str | None, *, name: str) -> str:
+    options = component.get("options", []) if isinstance(component, dict) else []
+    default = component.get("default") if isinstance(component, dict) else None
+    if not default and options:
+        default = options[0]
+    if value is None or value == "":
+        return str(default or "")
+    selected = str(value)
+    allowed = {str(option) for option in options}
+    if allowed and selected not in allowed:
+        known = ", ".join(sorted(allowed))
+        raise ValueError(f"알 수 없는 Lake {name}: {selected} (사용 가능: {known})")
+    return selected
+
+
+def build_lake_config_from_selection(
+    selection: dict[str, Any] | None,
+    *,
+    spec: dict[str, Any] | None = None,
+    path: Path | None = None,
+) -> LakeVideoConfig:
+    """Compose a LakeVideoConfig from selected URL components."""
+    spec = spec or load_lake_component_spec(path)
+    components = spec["components"]
+    sel = selection or {}
+
+    media = _selected_or_default(components.get("media", {}), sel.get("media"), name="media")
+    year_folder = _selected_or_default(
+        components.get("year_folder", {}),
+        sel.get("year_folder"),
+        name="year_folder",
+    )
+    vessel = _selected_or_default(components.get("vessel", {}), sel.get("vessel"), name="vessel")
+    stream = _selected_or_default(components.get("stream", {}), sel.get("stream"), name="stream")
+
+    suffix_options = components.get("suffix", {}).get("options") if isinstance(components.get("suffix"), dict) else None
+    suffixes = tuple(str(value).zfill(2)[-2:] for value in (suffix_options or DEFAULT_SECOND_SUFFIXES))
+    if not suffixes:
+        suffixes = DEFAULT_SECOND_SUFFIXES
+
+    base_url = f"{spec['base_host']}{media}/{year_folder}/"
+    digits = "".join(ch for ch in str(year_folder) if ch.isdigit())[:4]
+    year = int(digits) if len(digits) == 4 else datetime.now().year
+    label = f"{media}/{year_folder}/{vessel}_{stream}"
+
+    return LakeVideoConfig(
+        profile_id=label,
+        label=label,
+        base_url=base_url,
+        file_prefix=f"{vessel}_{stream}",
+        year=year,
+        minute_slots=tuple(spec["minute_slots"]),
+        second_suffixes=suffixes,
+    )
 
 
 def iter_hours_in_range(

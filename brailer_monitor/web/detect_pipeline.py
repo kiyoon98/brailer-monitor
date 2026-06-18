@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import subprocess
+import sys
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
@@ -21,8 +24,9 @@ from ..detect_timeline import (
     timeline_summary,
 )
 from ..lake_video_source import download_video
+from ..model_library import ModelLibrary
 from ..train import TrainingCancelled, load_task_type, reset_training_artifacts, run_training
-from ..video_detect import DetectionCancelled, detect_video
+from ..video_detect import DetectionCancelled
 from ..video_time import parse_video_start_time
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,8 @@ class PipelineState:
     train_progress_pct: float = 0.0
     train_weights: str | None = None
     train_error: str | None = None
+    active_model_id: str | None = None
+    active_model_name: str | None = None
     detect_status: str = "idle"
     detect_job_id: str | None = None
     detect_progress_pct: float = 0.0
@@ -91,14 +97,17 @@ class DetectPipelineManager:
         self.dataset_root = dataset_root
         self.config_dir = config_dir
         self.root.mkdir(parents=True, exist_ok=True)
+        self.model_library = ModelLibrary(self.config_dir.parent / "models" / "library")
         self._state_path = self.root / "pipeline_state.json"
         self._lock = threading.Lock()
         self._train_thread: threading.Thread | None = None
         self._detect_threads: dict[str, threading.Thread] = {}
+        self._detect_procs: dict[str, subprocess.Popen] = {}
         self._timeline_path = self.root / "detect_timeline.json"
         self._detect_queue: list[dict[str, Any]] = []
         self._batch_total = 0
         self._batch_done = 0
+        self._batch_failed = 0
         self._detect_cancel = threading.Event()
         self._train_cancel = threading.Event()
 
@@ -179,6 +188,8 @@ class DetectPipelineManager:
             state.train_progress_pct = 0.0
             state.train_weights = None
             state.train_error = None
+            state.active_model_id = None
+            state.active_model_name = None
             self._save_state(state)
             return {"reset": True, "deleted": deleted}
 
@@ -193,6 +204,104 @@ class DetectPipelineManager:
         reset_info = self.reset_training()
         started = self.start_training(epochs=epochs, batch=batch, imgsz=imgsz, device=device)
         return {**reset_info, **started}
+
+    def _dataset_summary(self) -> dict[str, Any]:
+        meta_path = self.dataset_root / "import_meta.json"
+        if not meta_path.exists():
+            return {}
+        try:
+            return json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _register_trained_model(self, weights: Path, epochs: int):
+        try:
+            meta = self._dataset_summary()
+            task_type = meta.get("task_type") or load_task_type(self.dataset_root)
+            class_names = (
+                meta.get("class_names")
+                or meta.get("label_summary", {}).get("class_names")
+                or []
+            )
+            return self.model_library.register(
+                weights,
+                task_type=task_type,
+                epochs=epochs,
+                class_names=class_names,
+                train_images=int(meta.get("train_images", 0) or 0),
+                val_images=int(meta.get("val_images", 0) or 0),
+                source="train",
+            )
+        except Exception:
+            logger.exception("Failed to register trained model into library")
+            return None
+
+    def list_models(self) -> dict[str, Any]:
+        state = self._load_state()
+        models = [record.to_dict() for record in self.model_library.list_models()]
+        active_id = state.active_model_id
+        if active_id and not self.model_library.exists(active_id):
+            active_id = None
+        return {"models": models, "active_id": active_id}
+
+    def activate_model(self, model_id: str) -> dict[str, Any]:
+        with self._lock:
+            state = self._load_state()
+            if state.train_status == "running" and self._train_thread_alive():
+                raise RuntimeError("학습이 진행 중입니다. 먼저 중지하세요.")
+            if _detect_is_active(state, threads=self._detect_threads):
+                raise RuntimeError("탐지가 진행 중입니다. 먼저 중지하세요.")
+
+            record = self.model_library.get(model_id)
+            weights = Path(record.weights_path)
+            if not weights.exists():
+                raise FileNotFoundError(f"모델 가중치 파일이 없습니다: {weights}")
+
+            state.active_model_id = record.id
+            state.active_model_name = record.name
+            state.train_weights = record.weights_path
+            state.train_status = "completed"
+            state.train_progress = "done"
+            state.train_epochs = record.epochs
+            state.train_epoch = record.epochs
+            state.train_progress_pct = 1.0
+            state.train_error = None
+            self._save_state(state)
+            return {"activated": True, "model": record.to_dict()}
+
+    def delete_model(self, model_id: str) -> dict[str, Any]:
+        with self._lock:
+            state = self._load_state()
+            deleted = self.model_library.delete(model_id)
+            if state.active_model_id == model_id:
+                state.active_model_id = None
+                state.active_model_name = None
+                state.train_weights = None
+                state.train_status = "idle"
+                state.train_progress = None
+                state.train_epoch = 0
+                state.train_epochs = 0
+                state.train_progress_pct = 0.0
+                self._save_state(state)
+            return {"deleted": deleted}
+
+    def rename_model(self, model_id: str, name: str) -> dict[str, Any]:
+        with self._lock:
+            record = self.model_library.rename(model_id, name)
+            state = self._load_state()
+            if state.active_model_id == model_id:
+                state.active_model_name = record.name
+                self._save_state(state)
+            return {"renamed": True, "model": record.to_dict()}
+
+    def _active_weights(self, state: PipelineState) -> Path | None:
+        if state.active_model_id and self.model_library.exists(state.active_model_id):
+            weights = self.model_library.weights_path(state.active_model_id)
+            if weights.exists():
+                return weights
+        if state.train_weights and Path(state.train_weights).exists():
+            return Path(state.train_weights)
+        return None
 
     def _finish_detection_cancelled(self) -> None:
         state = self._load_state()
@@ -283,6 +392,10 @@ class DetectPipelineManager:
         if meta_path.exists():
             payload["dataset_meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
         payload["detect_timeline"] = timeline_summary(self._timeline_path)
+        payload["models"] = [record.to_dict() for record in self.model_library.list_models()]
+        if state.active_model_id and not self.model_library.exists(state.active_model_id):
+            payload["active_model_id"] = None
+            payload["active_model_name"] = None
         return payload
 
     def get_timeline(self, *, offset: int = 0, limit: int = 60) -> dict[str, Any]:
@@ -400,8 +513,14 @@ class DetectPipelineManager:
                 should_cancel=self._train_cancel.is_set,
             )
             state = self._load_state()
+            record = self._register_trained_model(weights, epochs)
             state.train_status = "completed"
-            state.train_weights = str(weights.resolve())
+            if record is not None:
+                state.train_weights = record.weights_path
+                state.active_model_id = record.id
+                state.active_model_name = record.name
+            else:
+                state.train_weights = str(weights.resolve())
             state.train_progress = "done"
             state.train_epoch = epochs
             state.train_progress_pct = 1.0
@@ -478,16 +597,21 @@ class DetectPipelineManager:
 
         state = self._load_state()
         if model_path is None:
+            model_path = self._active_weights(state)
+        if model_path is None:
             task = load_task_type(self.dataset_root)
             default = Path("models/brailer_detect.pt" if task == "detect" else "models/brailer_seg.pt")
-            model_path = Path(state.train_weights) if state.train_weights else default
+            model_path = default
         if not model_path.exists():
-            raise FileNotFoundError(f"Model not found: {model_path}. Train first.")
+            raise FileNotFoundError(
+                "학습된 모델이 없습니다. 먼저 학습하거나 모델 라이브러리에서 모델을 선택하세요."
+            )
 
         self._clear_detection_cancel()
         self._recover_stale_detect()
         prepared_videos = self._prepare_batch_videos(videos)
         queued_jobs: list[dict[str, Any]] = []
+        first_item: dict[str, Any] | None = None
         with self._lock:
             state = self._load_state()
             running = state.detect_status == "running" and self._detect_session_alive()
@@ -495,10 +619,14 @@ class DetectPipelineManager:
             if not running:
                 self._batch_total = len(prepared_videos)
                 self._batch_done = 0
+                self._batch_failed = 0
                 state.detect_batch_total = self._batch_total
                 state.detect_batch_done = 0
                 state.detect_status = "running"
                 state.detect_error = None
+                state.detect_processed_frames = 0
+                state.detect_total_frames = 0
+                state.detect_progress_pct = 0.0
             else:
                 self._batch_total += len(prepared_videos)
                 state.detect_batch_total = self._batch_total
@@ -516,20 +644,58 @@ class DetectPipelineManager:
                 else:
                     item["video_path"] = prepared["video_path"]
                 if not running and index == 0:
-                    job = self._launch_detection(item)
+                    first_item = item
                     queued_jobs.append(
-                        {"job_id": job.job_id, "video_name": prepared["video_name"], "status": "running"}
+                        {"video_name": prepared["video_name"], "status": "starting"}
                     )
                     running = True
                 else:
                     self._detect_queue.append(item)
                     queued_jobs.append({"video_name": prepared["video_name"], "status": "queued"})
 
-            state = self._load_state()
             state.detect_queue_pending = len(self._detect_queue)
             state.detect_batch_total = self._batch_total
             state.detect_batch_done = self._batch_done
             self._save_state(state)
+
+        if first_item is not None:
+            try:
+                job = self._launch_detection(first_item)
+                queued_jobs[0] = {
+                    "job_id": job.job_id,
+                    "video_name": job.video_name,
+                    "status": "running",
+                }
+            except DetectionCancelled:
+                logger.info("First detection job cancelled before start")
+                with self._lock:
+                    self._detect_queue.clear()
+                    state = self._load_state()
+                    state.detect_status = "cancelled"
+                    state.detect_error = "사용자가 중지함"
+                    state.detect_queue_pending = 0
+                    state.detect_job_id = None
+                    self._save_state(state)
+                queued_jobs[0] = {
+                    "video_name": first_item["video_name"],
+                    "status": "cancelled",
+                }
+            except Exception as exc:
+                # First video failed to start; skip it and let the rest of the
+                # batch continue instead of aborting everything.
+                logger.exception("Failed to launch first detection job; skipping")
+                self._batch_done += 1
+                self._batch_failed += 1
+                state = self._load_state()
+                state.detect_batch_done = self._batch_done
+                state.detect_error = str(exc)
+                self._save_state(state)
+                queued_jobs[0] = {
+                    "video_name": first_item["video_name"],
+                    "status": "error",
+                    "error": str(exc),
+                }
+                self._start_next_queued_or_finish(success=False)
 
         return {
             "batch_size": len(prepared_videos),
@@ -553,6 +719,15 @@ class DetectPipelineManager:
         target_video = directory / "video.mp4"
         if self._detection_cancelled():
             raise DetectionCancelled("Detection cancelled by user")
+
+        state = self._load_state()
+        state.detect_status = "running"
+        state.detect_processed_frames = 0
+        state.detect_total_frames = 0
+        state.detect_progress_pct = 0.0
+        state.detect_error = None
+        self._save_state(state)
+
         if item.get("remote_url"):
             try:
                 download_video(
@@ -567,6 +742,14 @@ class DetectPipelineManager:
             target_video.write_bytes(video_path.read_bytes())
             if "_detect_staging" in video_path.as_posix():
                 video_path.unlink(missing_ok=True)
+                # Remove the per-batch staging folder once it has been drained
+                # so it doesn't accumulate over time.
+                staging_dir = video_path.parent
+                try:
+                    if staging_dir.name and not any(staging_dir.iterdir()):
+                        staging_dir.rmdir()
+                except OSError:
+                    pass
 
         video_start = parse_video_start_time(video_name)
         job = DetectJob(
@@ -649,6 +832,114 @@ class DetectPipelineManager:
             return 1
         return max(len(range(0, total_frames, stride)), 1)
 
+    def _run_detection_subprocess(
+        self,
+        job_id: str,
+        video_path: Path,
+        model_path: Path,
+        frame_stride: int,
+        confidence: float,
+        device: str | int,
+    ) -> dict[str, Any]:
+        """Run YOLO inference in a separate process so a CUDA crash can't wedge
+        the server. Returns the detection manifest the worker wrote to disk."""
+        job_dir = self._job_dir(job_id)
+        progress_file = job_dir / "progress.json"
+        error_file = job_dir / "worker_error.txt"
+        log_file = job_dir / "worker.log"
+        for stale in (progress_file, error_file):
+            stale.unlink(missing_ok=True)
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "brailer_monitor.web.detect_worker",
+            "--video",
+            str(video_path),
+            "--model",
+            str(model_path),
+            "--output",
+            str(job_dir),
+            "--frame-stride",
+            str(frame_stride),
+            "--confidence",
+            str(confidence),
+            "--device",
+            str(device),
+            "--progress-file",
+            str(progress_file),
+        ]
+
+        last_progress: dict[str, Any] | None = None
+
+        def _drain_progress() -> None:
+            nonlocal last_progress
+            if not progress_file.exists():
+                return
+            try:
+                prog = json.loads(progress_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return
+            if prog and prog != last_progress:
+                last_progress = prog
+                self._update_detect_progress(
+                    job_id,
+                    int(prog.get("processed", 0)),
+                    int(prog.get("total", 0)) or 1,
+                    int(prog.get("with", 0)),
+                )
+
+        with open(log_file, "w", encoding="utf-8") as log_handle:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(self.config_dir.parent),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+        self._detect_procs[job_id] = proc
+        try:
+            while proc.poll() is None:
+                if self._detection_cancelled():
+                    self._terminate_process(proc)
+                    raise DetectionCancelled("Detection cancelled by user")
+                _drain_progress()
+                time.sleep(0.5)
+
+            _drain_progress()
+            if self._detection_cancelled():
+                raise DetectionCancelled("Detection cancelled by user")
+
+            if proc.returncode != 0:
+                detail = ""
+                if error_file.exists():
+                    detail = error_file.read_text(encoding="utf-8").strip()
+                if not detail and log_file.exists():
+                    detail = log_file.read_text(encoding="utf-8").strip()[-2000:]
+                raise RuntimeError(
+                    detail or f"탐지 작업이 코드 {proc.returncode}로 종료되었습니다."
+                )
+
+            manifest_path = job_dir / "detections.json"
+            if not manifest_path.exists():
+                raise RuntimeError("탐지 결과 파일(detections.json)이 생성되지 않았습니다.")
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        finally:
+            self._detect_procs.pop(job_id, None)
+
+    @staticmethod
+    def _terminate_process(proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("Detection worker pid %s did not exit after kill", proc.pid)
+
     def _run_detection(
         self,
         job_id: str,
@@ -667,18 +958,13 @@ class DetectPipelineManager:
             planned = self._planned_frame_count(video_path, frame_stride)
             self._update_detect_progress(job_id, 0, planned, 0)
 
-            def on_progress(processed: int, total: int, with_det: int) -> None:
-                self._update_detect_progress(job_id, processed, total, with_det)
-
-            manifest = detect_video(
+            manifest = self._run_detection_subprocess(
+                job_id,
                 video_path,
                 model_path,
-                output_dir=self._job_dir(job_id),
-                frame_stride=frame_stride,
-                confidence=confidence,
-                device=device,
-                on_progress=on_progress,
-                should_cancel=self._detection_cancelled,
+                frame_stride,
+                confidence,
+                device,
             )
             if self._detection_cancelled():
                 raise DetectionCancelled("Detection cancelled by user")
@@ -738,13 +1024,19 @@ class DetectPipelineManager:
             job.status = "error"
             job.error = str(exc)
             self._save_job(job)
+            # Skip the failed video and continue with the rest of the batch.
+            # (A crashed worker subprocess can't corrupt the server, so the
+            # next video starts fresh.)
+            self._batch_done += 1
+            self._batch_failed += 1
             state = self._load_state()
-            state.detect_status = "error"
+            state.detect_batch_done = self._batch_done
             state.detect_error = str(exc)
             self._save_state(state)
-            self._detect_queue.clear()
+            self._start_next_queued_or_finish(success=False)
         finally:
             self._detect_threads.pop(job_id, None)
+            self._detect_procs.pop(job_id, None)
 
     def _start_next_queued_or_finish(self, *, success: bool) -> None:
         next_item: dict[str, Any] | None = None
@@ -760,7 +1052,18 @@ class DetectPipelineManager:
                 self._save_state(state)
             else:
                 state = self._load_state()
-                state.detect_status = "completed" if success else state.detect_status
+                # Batch ran to the end. Mark "error" only if every video failed;
+                # otherwise the batch is "completed" (possibly with some skips).
+                if self._batch_failed and self._batch_failed >= self._batch_done:
+                    state.detect_status = "error"
+                    state.detect_error = f"{self._batch_failed}개 영상 모두 탐지에 실패했습니다."
+                else:
+                    state.detect_status = "completed"
+                    state.detect_error = (
+                        f"{self._batch_failed}개 영상 탐지 실패 · 나머지는 완료"
+                        if self._batch_failed
+                        else None
+                    )
                 state.detect_queue_pending = 0
                 state.detect_batch_total = self._batch_total
                 state.detect_batch_done = self._batch_done
@@ -778,6 +1081,17 @@ class DetectPipelineManager:
             self._launch_detection(next_item)
         except DetectionCancelled:
             self._finish_detection_cancelled()
+        except Exception as exc:
+            # The queued video failed to start (download/IO). Skip it and move
+            # on so one bad video can't stall the whole batch.
+            logger.exception("Failed to launch queued detection; skipping")
+            self._batch_done += 1
+            self._batch_failed += 1
+            state = self._load_state()
+            state.detect_batch_done = self._batch_done
+            state.detect_error = str(exc)
+            self._save_state(state)
+            self._start_next_queued_or_finish(success=False)
 
     def _save_job(self, job: DetectJob) -> None:
         path = self._job_dir(job.job_id) / "job.json"

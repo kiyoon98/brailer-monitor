@@ -66,6 +66,29 @@ button.secondary { background: #243044; color: var(--text); }
 button.secondary.danger { background: #3f1d24; color: #fecaca; border: 1px solid #7f1d1d; }
 button.secondary.danger:hover { background: #5b1f28; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.small { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
+
+.model-library { margin-top: 1rem; border-top: 1px solid var(--border, #243044); padding-top: 0.75rem; }
+.model-library-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.model-library-head h3 { margin: 0; font-size: 0.95rem; }
+.model-library-head button { margin-top: 0; }
+.model-list { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+.model-empty { color: var(--muted); font-size: 0.82rem; padding: 0.5rem 0; }
+.model-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  padding: 0.55rem 0.7rem; border: 1px solid #243044; border-radius: 10px; background: #161e2e;
+}
+.model-item.active { border-color: var(--accent); background: #182539; }
+.model-item-main { min-width: 0; flex: 1; }
+.model-item-name { display: flex; align-items: center; gap: 0.4rem; font-weight: 600; }
+.model-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-active-badge {
+  background: var(--accent); color: white; font-size: 0.68rem; font-weight: 700;
+  padding: 0.08rem 0.4rem; border-radius: 999px; flex-shrink: 0;
+}
+.model-item-meta { color: var(--muted); font-size: 0.74rem; margin-top: 0.2rem; }
+.model-item-actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
+.model-item-actions button { margin-top: 0; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .panel-head h2 { margin: 0; }
 .train-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
@@ -150,6 +173,9 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   font-size: 0.85rem;
 }
 .detect-source label { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text); }
+.lake-parts { gap: 0.6rem; flex-wrap: wrap; }
+.lake-parts label { display: grid; gap: 0.25rem; font-size: 0.8rem; color: var(--muted); }
+.lake-parts select { min-width: 8.5rem; }
 .lake-range { align-items: end; }
 .lake-range .range-label {
   color: var(--muted);
@@ -158,6 +184,24 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   padding-bottom: 0.45rem;
 }
 .timeline-legend { margin: 0 0 0.65rem; }
+.report-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.75rem;
+}
+.report-actions button { margin-top: 0; }
+.report-links { display: inline-flex; gap: 0.45rem; flex-wrap: wrap; }
+.report-links a {
+  color: var(--accent);
+  border: 1px solid #2f415c;
+  border-radius: 6px;
+  padding: 0.22rem 0.5rem;
+  text-decoration: none;
+  font-size: 0.8rem;
+}
+.report-links a:hover { border-color: var(--accent); }
 .timeline-axis { margin-bottom: 0.75rem; }
 .timeline-toolbar {
   display: flex;

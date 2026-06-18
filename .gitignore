@@ -8,8 +8,10 @@ build/
 venv/
 output/
 runs/
+data/pipeline/
 data/raw/*.mp4
 data/dataset/staging/
+models/library/
 models/*.pt
 models/*.engine
 models/*.onnx

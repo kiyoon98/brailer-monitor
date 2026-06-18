@@ -14,11 +14,17 @@ const els = {
   trainProgressWrap: document.getElementById("trainProgressWrap"),
   trainProgressBar: document.getElementById("trainProgressBar"),
   trainProgressText: document.getElementById("trainProgressText"),
+  modelCount: document.getElementById("modelCount"),
+  modelList: document.getElementById("modelList"),
+  refreshModelsBtn: document.getElementById("refreshModelsBtn"),
   detectVideo: document.getElementById("detectVideo"),
   detectUploadSection: document.getElementById("detectUploadSection"),
   detectLakeSection: document.getElementById("detectLakeSection"),
-  lakeProfile: document.getElementById("lakeProfile"),
-  lakeBaseUrl: document.getElementById("lakeBaseUrl"),
+  lakeMedia: document.getElementById("lakeMedia"),
+  lakeYearFolder: document.getElementById("lakeYearFolder"),
+  lakeVessel: document.getElementById("lakeVessel"),
+  lakeStream: document.getElementById("lakeStream"),
+  lakeUrlPreview: document.getElementById("lakeUrlPreview"),
   lakeStartMonth: document.getElementById("lakeStartMonth"),
   lakeStartDay: document.getElementById("lakeStartDay"),
   lakeStartHour: document.getElementById("lakeStartHour"),
@@ -32,6 +38,9 @@ const els = {
   detectBtn: document.getElementById("detectBtn"),
   stopDetectBtn: document.getElementById("stopDetectBtn"),
   resetTimelineBtn: document.getElementById("resetTimelineBtn"),
+  generateReportBtn: document.getElementById("generateReportBtn"),
+  reportStatus: document.getElementById("reportStatus"),
+  reportLinks: document.getElementById("reportLinks"),
   detectStatus: document.getElementById("detectStatus"),
   detectProgressWrap: document.getElementById("detectProgressWrap"),
   detectProgressBar: document.getElementById("detectProgressBar"),
@@ -105,7 +114,7 @@ let timelineAxisSegments = [];
 let timelineZoom = 1;
 let detectSourceMode = "upload";
 let lakeVideosReady = 0;
-let lakeProfileId = null;
+let lakeSpec = null;
 let detectFrameJobId = null;
 let lastPipelineState = null;
 let importFramesLoaded = false;
@@ -114,6 +123,122 @@ let labelSummaryKey = "";
 let detectSession = 0;
 let detectSessionActive = false;
 let detectStopRequested = false;
+let modelListKey = "";
+
+function formatModelDate(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatModelSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}MB`;
+  return `${(n / 1000).toFixed(0)}KB`;
+}
+
+function renderModels(models, activeId) {
+  if (!els.modelList) return;
+  const list = Array.isArray(models) ? models : [];
+  if (els.modelCount) els.modelCount.textContent = String(list.length);
+
+  const key = JSON.stringify(list.map((m) => [m.id, m.name, m.id === activeId]));
+  if (key === modelListKey) return;
+  modelListKey = key;
+
+  if (!list.length) {
+    els.modelList.innerHTML =
+      '<div class="model-empty">아직 저장된 모델이 없습니다. 학습을 완료하면 여기에 표시됩니다.</div>';
+    return;
+  }
+
+  els.modelList.innerHTML = list
+    .map((m) => {
+      const isActive = m.id === activeId;
+      const classes = (m.class_names || []).join(", ") || "-";
+      const size = formatModelSize(m.size_bytes);
+      const metaParts = [
+        formatModelDate(m.created_at),
+        `epoch ${m.epochs || 0}`,
+        `클래스: ${classes}`,
+        `train ${m.train_images || 0}/val ${m.val_images || 0}`,
+      ];
+      if (size) metaParts.push(size);
+      return `
+        <div class="model-item${isActive ? " active" : ""}" data-model-id="${m.id}">
+          <div class="model-item-main">
+            <div class="model-item-name">
+              ${isActive ? '<span class="model-active-badge">사용 중</span>' : ""}
+              <span class="model-name-text">${m.name}</span>
+            </div>
+            <div class="model-item-meta">${metaParts.join(" · ")}</div>
+          </div>
+          <div class="model-item-actions">
+            <button type="button" class="secondary small" data-model-action="activate" ${isActive ? "disabled" : ""}>${isActive ? "선택됨" : "사용"}</button>
+            <button type="button" class="secondary small" data-model-action="rename">이름변경</button>
+            <button type="button" class="secondary small danger" data-model-action="delete">삭제</button>
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+async function loadModels() {
+  try {
+    const data = await api("/api/pipeline/models");
+    renderModels(data.models, data.active_id);
+  } catch (err) {
+    console.error("loadModels failed", err);
+  }
+}
+
+async function handleModelAction(event) {
+  const btn = event.target.closest("[data-model-action]");
+  if (!btn) return;
+  const item = btn.closest("[data-model-id]");
+  const modelId = item?.dataset.modelId;
+  if (!modelId) return;
+  const action = btn.dataset.modelAction;
+
+  try {
+    if (action === "activate") {
+      btn.disabled = true;
+      await api(`/api/pipeline/models/${modelId}/activate`, { method: "POST" });
+      modelListKey = "";
+      const { state } = await api("/api/pipeline/state");
+      lastPipelineState = state;
+      renderPipelineState(state);
+      renderModels(state.models, state.active_model_id);
+      setStatus(els.trainStatus, "선택한 모델을 탐지에 사용합니다.", "ok");
+    } else if (action === "rename") {
+      const current = item.querySelector(".model-name-text")?.textContent || "";
+      const name = prompt("모델 이름을 입력하세요", current);
+      if (name == null || !name.trim()) return;
+      await api(`/api/pipeline/models/${modelId}/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      modelListKey = "";
+      await loadModels();
+    } else if (action === "delete") {
+      if (!confirm("이 모델을 삭제할까요? 되돌릴 수 없습니다.")) return;
+      await api(`/api/pipeline/models/${modelId}`, { method: "DELETE" });
+      modelListKey = "";
+      const { state } = await api("/api/pipeline/state");
+      lastPipelineState = state;
+      renderPipelineState(state);
+      renderModels(state.models, state.active_model_id);
+    }
+  } catch (err) {
+    setStatus(els.trainStatus, err.message, "error");
+    modelListKey = "";
+    await loadModels();
+  }
+}
 
 function isDetectBusy(state = lastPipelineState) {
   return (
@@ -141,12 +266,14 @@ function showDetectProgressFromState(state) {
   const pct =
     state.detect_progress_pct ??
     (total > 0 ? processed / total : processed > 0 ? 0.01 : 0);
-  const barText = detectProgressText(processed, total, withObjects, pct, state);
-  setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, pct, barText);
-  setStatus(
-    els.detectStatus,
-    state.detect_status === "cancelling" ? "탐지 중지 중..." : barText,
-  );
+  if (processed === 0 && total <= 0) {
+    setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
+    setStatus(els.detectStatus, detectPreparingMessage(state));
+  } else {
+    const barText = detectProgressText(processed, total, withObjects, pct, state);
+    setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, pct, barText);
+    setStatus(els.detectStatus, detectStatusDetail(processed, total, withObjects, pct, state));
+  }
   els.detectBtn.disabled = true;
   return true;
 }
@@ -215,9 +342,18 @@ function setDetectSourceMode(mode) {
   updateDetectButtonState();
 }
 
+function readLakeSelection() {
+  return {
+    media: els.lakeMedia?.value || null,
+    year_folder: els.lakeYearFolder?.value || null,
+    vessel: els.lakeVessel?.value || null,
+    stream: els.lakeStream?.value || null,
+  };
+}
+
 function readLakeRange() {
   return {
-    profile: lakeProfileId || els.lakeProfile?.value || null,
+    ...readLakeSelection(),
     start_month: Number(els.lakeStartMonth.value),
     start_day: Number(els.lakeStartDay.value),
     start_hour: Number(els.lakeStartHour.value),
@@ -227,16 +363,24 @@ function readLakeRange() {
   };
 }
 
+function hasUsableModel(state = lastPipelineState) {
+  return (
+    state?.train_status === "completed" ||
+    !!state?.active_model_id ||
+    (Array.isArray(state?.models) && state.models.length > 0)
+  );
+}
+
 function updateDetectButtonState() {
-  const trainDone = lastPipelineState?.train_status === "completed";
+  const modelReady = hasUsableModel();
   const detectActive = isDetectBusy();
-  if (!trainDone) {
+  if (!modelReady) {
     els.detectBtn.disabled = true;
     if (lastPipelineState?.import_status === "completed" && !detectActive && els.detectStatus) {
       const hint =
         lastPipelineState?.train_status === "running"
           ? "학습 완료 후 탐지할 수 있습니다."
-          : "학습된 모델이 없습니다. 학습을 먼저 완료하세요.";
+          : "학습된 모델이 없습니다. 학습을 먼저 완료하거나 모델을 선택하세요.";
       setStatus(els.detectStatus, hint);
     }
     return;
@@ -248,30 +392,37 @@ function updateDetectButtonState() {
   els.detectBtn.disabled = !els.detectVideo.files?.length;
 }
 
-function formatLakeFilenameHint(config) {
-  const minute = String(config.minute_slots?.[0] ?? 0).padStart(2, "0");
-  const suffix = config.second_suffixes?.[0] ?? "??";
-  return `${config.file_prefix}_YYMMDD_HH${minute}${suffix}.mp4`;
+function populateLakeSelect(selectEl, component) {
+  if (!selectEl || !component) return;
+  const options = component.options || [];
+  const def = component.default || options[0];
+  selectEl.innerHTML = options
+    .map(
+      (value) =>
+        `<option value="${value}"${value === def ? " selected" : ""}>${value}</option>`,
+    )
+    .join("");
 }
 
-async function loadLakeConfig(profile = lakeProfileId) {
+function updateLakeUrlPreview() {
+  if (!els.lakeUrlPreview || !lakeSpec) return;
+  const sel = readLakeSelection();
+  const minute = String(lakeSpec.minute_slots?.[0] ?? 0).padStart(2, "0");
+  const suffix = lakeSpec.components?.suffix?.default ?? "16";
+  const filename = `${sel.vessel}_${sel.stream}_YYMMDD_HH${minute}${suffix}.mp4`;
+  els.lakeUrlPreview.textContent = `${lakeSpec.base_host}${sel.media}/${sel.year_folder}/MM/DD/HH/${filename}`;
+}
+
+async function loadLakeConfig() {
   try {
-    const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
-    const config = await api(`/api/pipeline/lake-videos/config${query}`);
-    lakeProfileId = config.profile || profile || null;
-    if (els.lakeProfile && config.profiles?.length) {
-      const selected = lakeProfileId || config.profile;
-      els.lakeProfile.innerHTML = config.profiles
-        .map((item) => {
-          const isSelected = item.id === selected || (!selected && item.default);
-          return `<option value="${item.id}"${isSelected ? " selected" : ""}>${item.label}</option>`;
-        })
-        .join("");
-      lakeProfileId = els.lakeProfile.value;
-    }
-    if (els.lakeBaseUrl) {
-      els.lakeBaseUrl.textContent = `${config.base_url} · ${formatLakeFilenameHint(config)} · ${config.year}년`;
-    }
+    const spec = await api("/api/pipeline/lake-videos/config");
+    lakeSpec = spec;
+    const components = spec.components || {};
+    populateLakeSelect(els.lakeMedia, components.media);
+    populateLakeSelect(els.lakeYearFolder, components.year_folder);
+    populateLakeSelect(els.lakeVessel, components.vessel);
+    populateLakeSelect(els.lakeStream, components.stream);
+    updateLakeUrlPreview();
   } catch (err) {
     console.error("loadLakeConfig failed", err);
   }
@@ -334,25 +485,51 @@ function beginDetectSession(batchTotal, queuePending = Math.max(0, batchTotal - 
   startPolling();
 }
 
-function finishDetectStart(result, batchTotal) {
+async function finishDetectStart(result, batchTotal) {
   const running = result.jobs?.find((job) => job.job_id) || result.job;
   activeDetectJobId = running?.job_id || result.job_id || null;
-  lastPipelineState = {
-    ...(lastPipelineState || {}),
-    detect_status: "running",
-    detect_job_id: activeDetectJobId || lastPipelineState?.detect_job_id,
-    detect_batch_total: result.batch_total ?? result.batch_size ?? batchTotal,
-    detect_batch_done: result.batch_done ?? 0,
-    detect_queue_pending: result.queue_pending ?? 0,
-  };
+  try {
+    const { state } = await api("/api/pipeline/state");
+    lastPipelineState = {
+      ...state,
+      detect_status: state.detect_status === "idle" ? "running" : state.detect_status,
+      detect_job_id: activeDetectJobId || state.detect_job_id,
+      detect_batch_total: result.batch_total ?? result.batch_size ?? batchTotal,
+      detect_batch_done: result.batch_done ?? state.detect_batch_done ?? 0,
+      detect_queue_pending: result.queue_pending ?? state.detect_queue_pending ?? 0,
+    };
+  } catch {
+    lastPipelineState = {
+      ...(lastPipelineState || {}),
+      detect_status: "running",
+      detect_job_id: activeDetectJobId || lastPipelineState?.detect_job_id,
+      detect_batch_total: result.batch_total ?? result.batch_size ?? batchTotal,
+      detect_batch_done: result.batch_done ?? 0,
+      detect_queue_pending: result.queue_pending ?? 0,
+    };
+  }
+  // Backend has accepted the request and is now running/queued; the transient
+  // "session" flag is no longer needed (prevents it from blocking terminal UI).
+  if (activeDetectJobId || (result.queue_pending || 0) > 0 || result.batch_total > 0) {
+    endDetectSession();
+  }
+  const s = lastPipelineState;
   if (activeDetectJobId) {
-    showDetectProgress(0, 0, 0, 0, lastPipelineState);
+    showDetectProgress(
+      s.detect_processed_frames || 0,
+      s.detect_total_frames || 0,
+      s.detect_frames_with_objects || 0,
+      s.detect_progress_pct || 0,
+      s,
+    );
   } else if ((result.queue_pending || 0) > 0) {
+    setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
     setStatus(els.detectStatus, `대기열 ${result.queue_pending}개 · 첫 비디오 시작 중...`);
   } else {
-    showDetectProgressFromState(lastPipelineState);
+    showDetectProgressFromState(s);
   }
-  updateStopButtons(lastPipelineState);
+  updateStopButtons(s);
+  startPolling();
 }
 
 function fmtTime(sec) {
@@ -376,8 +553,7 @@ function setProgress(wrap, bar, textEl, pct, text) {
   textEl.textContent = text;
 }
 
-function detectProgressText(processed, total, withObjects, pct, state) {
-  const totalLabel = total > 0 ? total : "?";
+function detectBatchSuffix(state) {
   let batch = "";
   if (state?.detect_batch_total > 1) {
     const current = Math.min((state.detect_batch_done || 0) + 1, state.detect_batch_total);
@@ -386,7 +562,32 @@ function detectProgressText(processed, total, withObjects, pct, state) {
   if (state?.detect_queue_pending > 0) {
     batch += ` · 대기 ${state.detect_queue_pending}`;
   }
-  return `탐지 중 ${processed}/${totalLabel} 프레임 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)${batch}`;
+  return batch;
+}
+
+function detectProgressText(processed, total, withObjects, pct, state) {
+  const totalLabel = total > 0 ? total : "?";
+  return `탐지 중 ${processed}/${totalLabel} 프레임 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)${detectBatchSuffix(state)}`;
+}
+
+function detectPreparingMessage(state) {
+  if (state?.detect_status === "cancelling") {
+    return "탐지 중지 중...";
+  }
+  return `영상 준비 중${detectBatchSuffix(state)}`;
+}
+
+function detectStatusDetail(processed, total, withObjects, pct, state) {
+  if (state?.detect_status === "cancelling") {
+    return "탐지 중지 중...";
+  }
+  if (processed === 0 && total <= 0) {
+    return detectPreparingMessage(state);
+  }
+  if (processed === 0 && total > 0) {
+    return `모델 로딩 중 · ${total}프레임 예정${detectBatchSuffix(state)}`;
+  }
+  return `탐지 진행 중 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)`;
 }
 
 function shapeSummary(obj) {
@@ -539,15 +740,19 @@ async function previewCvatFile(file) {
 }
 
 function showDetectProgress(processed, total, withObjects, pct, state = lastPipelineState) {
-  setProgress(
-    els.detectProgressWrap,
-    els.detectProgressBar,
-    els.detectProgressText,
-    pct,
-    detectProgressText(processed, total, withObjects, pct, state),
-  );
-  const detail = detectProgressText(processed, total, withObjects, pct, state);
-  setStatus(els.detectStatus, detail);
+  if (processed === 0 && total <= 0) {
+    setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
+    setStatus(els.detectStatus, detectPreparingMessage(state));
+  } else {
+    setProgress(
+      els.detectProgressWrap,
+      els.detectProgressBar,
+      els.detectProgressText,
+      pct,
+      detectProgressText(processed, total, withObjects, pct, state),
+    );
+    setStatus(els.detectStatus, detectStatusDetail(processed, total, withObjects, pct, state));
+  }
   els.detectBtn.disabled = true;
 }
 
@@ -564,9 +769,10 @@ function showDetectComplete(job, state = lastPipelineState) {
     1,
     `완료: ${job.processed_frames}프레임 · 객체 ${job.frames_with_detections}프레임${batch}`,
   );
+  const failNote = state?.detect_error ? ` · ${state.detect_error}` : "";
   setStatus(
     els.detectStatus,
-    `탐지 완료: 누적 ${timelineCount}건 · 마지막 ${job.video_name}`,
+    `탐지 완료: 누적 ${timelineCount}건 · 마지막 ${job.video_name}${failNote}`,
     "ok",
   );
   els.detectBtn.disabled = false;
@@ -585,6 +791,17 @@ function isDetectActive(state) {
     ((state.detect_batch_total || 0) > (state.detect_batch_done || 0) &&
       state.detect_status !== "error" &&
       state.detect_status !== "cancelled")
+  );
+}
+
+// Whether a detection job is genuinely in flight (ignores the transient
+// "session requested" flag so terminal states can always clear the UI).
+function isDetectLive(state = lastPipelineState) {
+  return (
+    !!activeDetectJobId ||
+    state?.detect_status === "running" ||
+    state?.detect_status === "cancelling" ||
+    (state?.detect_queue_pending || 0) > 0
   );
 }
 
@@ -618,6 +835,10 @@ function trainStatusText(state) {
 function renderPipelineState(state) {
   const meta = state.dataset_meta;
 
+  if (state.models !== undefined) {
+    renderModels(state.models, state.active_model_id);
+  }
+
   if (state.import_status === "completed" && meta) {
     setStatus(
       els.importStatus,
@@ -645,7 +866,10 @@ function renderPipelineState(state) {
     els.trainBtn.disabled = true;
   } else if (state.train_status === "completed") {
     setProgress(els.trainProgressWrap, els.trainProgressBar, els.trainProgressText, 1, "학습 완료");
-    setStatus(els.trainStatus, `학습 완료: ${state.train_weights}`, "ok");
+    const activeLabel = state.active_model_name
+      ? `사용 모델: ${state.active_model_name}`
+      : `학습 완료: ${state.train_weights}`;
+    setStatus(els.trainStatus, activeLabel, "ok");
     els.trainBtn.disabled = false;
     updateDetectButtonState();
   } else if (state.train_status === "cancelled") {
@@ -665,15 +889,11 @@ function renderPipelineState(state) {
 
   if (state.detect_status === "running" || state.detect_status === "cancelling") {
     showDetectProgressFromState(state);
-  } else if (
-    detectSessionActive &&
-    !activeDetectJobId &&
-    (state.detect_status === "completed" || state.detect_status === "cancelled")
-  ) {
+  } else if (detectSessionActive && !isDetectLive(state)) {
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
     setStatus(els.detectStatus, "비디오 업로드·탐지 준비 중...");
     els.detectBtn.disabled = true;
-  } else if (state.detect_status === "completed" && !isDetectBusy(state)) {
+  } else if (state.detect_status === "completed" && !isDetectLive(state) && !detectSessionActive) {
     const batch =
       state.detect_batch_total > 1
         ? ` (${state.detect_batch_done}/${state.detect_batch_total} 비디오)`
@@ -685,16 +905,17 @@ function renderPipelineState(state) {
       1,
       `탐지 완료 · ${state.detect_processed_frames || 0}프레임 · 객체 ${state.detect_frames_with_objects || 0}개${batch}`,
     );
+    const failNote = state.detect_error ? ` · ${state.detect_error}` : "";
     setStatus(
       els.detectStatus,
-      `탐지 완료 · 누적 ${state.detect_timeline_events || 0}건`,
+      `탐지 완료 · 누적 ${state.detect_timeline_events || 0}건${failNote}`,
       "ok",
     );
     els.detectBtn.disabled = false;
     detectStopRequested = false;
     endDetectSession();
     updateDetectButtonState();
-  } else if (state.detect_status === "error") {
+  } else if (state.detect_status === "error" && !detectSessionActive) {
     activeDetectJobId = null;
     endDetectSession();
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
@@ -702,7 +923,7 @@ function renderPipelineState(state) {
     els.detectBtn.disabled = false;
     detectStopRequested = false;
     updateDetectButtonState();
-  } else if (state.detect_status === "cancelled" && !isDetectBusy(state)) {
+  } else if (state.detect_status === "cancelled" && !isDetectLive(state) && !detectSessionActive) {
     activeDetectJobId = null;
     endDetectSession();
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
@@ -1195,12 +1416,22 @@ async function loadTimeline({ reset = true } = {}) {
 }
 
 async function resetTimeline() {
-  if (!confirm("누적 탐지 결과를 모두 초기화할까요?")) return;
-  await api("/api/pipeline/detect/timeline/reset", { method: "POST" });
+  const detectionRunning = isDetectLive(lastPipelineState) || isDetectBusy(lastPipelineState);
+  const message = detectionRunning
+    ? "탐지가 진행 중입니다. 누적된 결과만 초기화하고 탐지는 계속됩니다. 진행할까요?"
+    : "누적 탐지 결과를 모두 초기화할까요?";
+  if (!confirm(message)) return;
+
+  try {
+    await api("/api/pipeline/detect/timeline/reset", { method: "POST" });
+  } catch (err) {
+    setStatus(els.detectStatus, err.message, "error");
+    return;
+  }
+
   detectFrameOffset = 0;
   detectFrameTotal = 0;
   detectFrameJobId = null;
-  handledDetectJobId = null;
   timelineRange = null;
   timelineAxisSegments = [];
   timelineZoom = 1;
@@ -1210,7 +1441,47 @@ async function resetTimeline() {
   if (els.timelineRail) els.timelineRail.innerHTML = "";
   if (els.timelineTicks) els.timelineTicks.innerHTML = "";
   els.detectFrameMore?.classList.add("hidden");
-  setStatus(els.detectStatus, "탐지 결과가 초기화되었습니다.", "ok");
+
+  if (detectionRunning) {
+    // Detection still running: only the accumulated display was cleared.
+    showDetectProgressFromState(lastPipelineState);
+  } else {
+    // Idle: don't strand the "탐지 시작" button — make sure it is usable again.
+    handledDetectJobId = null;
+    activeDetectJobId = null;
+    endDetectSession();
+    setStatus(els.detectStatus, "탐지 결과가 초기화되었습니다.", "ok");
+    updateDetectButtonState();
+  }
+}
+
+function renderReportLinks(files) {
+  if (!els.reportLinks) return;
+  const labels = { html: "HTML", csv: "CSV", json: "JSON" };
+  els.reportLinks.innerHTML = Object.entries(files || {})
+    .map(([kind, filename]) => {
+      const href = `/api/pipeline/detect/report/${encodeURIComponent(filename)}`;
+      const target = kind === "html" ? ' target="_blank" rel="noreferrer"' : "";
+      return `<a href="${href}"${target}>${labels[kind] || kind}</a>`;
+    })
+    .join("");
+}
+
+async function generateDetectionReport() {
+  if (!els.generateReportBtn) return;
+  els.generateReportBtn.disabled = true;
+  if (els.reportStatus) els.reportStatus.textContent = "문서 생성 중...";
+  if (els.reportLinks) els.reportLinks.innerHTML = "";
+  try {
+    const result = await api("/api/pipeline/detect/report/create", { method: "POST" });
+    renderReportLinks(result.files);
+    const count = result.report?.segment_count ?? 0;
+    if (els.reportStatus) els.reportStatus.textContent = `생성 완료 · ${count}개 구간`;
+  } catch (err) {
+    if (els.reportStatus) els.reportStatus.textContent = err.message;
+  } finally {
+    els.generateReportBtn.disabled = false;
+  }
 }
 
 async function finalizeDetectJob(job) {
@@ -1223,20 +1494,21 @@ async function finalizeDetectJob(job) {
 
 async function updateDetectUI(jobId) {
   if (!jobId) return null;
-  if (isDetectStopping()) {
-    setStatus(els.detectStatus, "탐지 중지 중...");
-    return "cancelling";
-  }
   try {
     const { job } = await api(`/api/pipeline/detect/${jobId}`);
 
     if (job.status === "cancelled") {
-      if (isDetectActive(lastPipelineState) || activeDetectJobId) {
+      // A cancelled job means the whole detection was stopped (the queue is
+      // cleared on cancel). Only stay "running" if the backend genuinely still
+      // reports an active session — never just because activeDetectJobId is set,
+      // otherwise we could never clear it and the button stays disabled forever.
+      if (isDetectActive(lastPipelineState)) {
         showDetectProgressFromState(lastPipelineState);
         return "running";
       }
       activeDetectJobId = null;
       detectStopRequested = false;
+      endDetectSession();
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
       setStatus(els.detectStatus, job.error || "탐지가 중지되었습니다.", "error");
       updateDetectButtonState();
@@ -1259,10 +1531,7 @@ async function updateDetectUI(jobId) {
     }
 
     if (job.status === "completed") {
-      if (isDetectStopping()) {
-        setStatus(els.detectStatus, "탐지 중지 중...");
-        return "cancelling";
-      }
+      detectStopRequested = false;
       const { state: fresh } = await api("/api/pipeline/state");
       lastPipelineState = fresh;
       const batchStillRunning =
@@ -1270,6 +1539,7 @@ async function updateDetectUI(jobId) {
         (fresh.detect_status === "running" && fresh.detect_job_id !== job.job_id) ||
         ((fresh.detect_batch_total || 0) > (fresh.detect_batch_done || 0) &&
           fresh.detect_status !== "error" &&
+          fresh.detect_status !== "cancelled" &&
           fresh.detect_status !== "completed");
       if (batchStillRunning) {
         await loadTimeline({ reset: true });
@@ -1287,9 +1557,12 @@ async function updateDetectUI(jobId) {
 
     if (job.status === "error") {
       activeDetectJobId = null;
+      detectStopRequested = false;
+      endDetectSession();
       setStatus(els.detectStatus, job.error || "탐지 실패", "error");
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
       els.detectBtn.disabled = false;
+      updateDetectButtonState();
       return "done";
     }
   } catch (err) {
@@ -1323,6 +1596,7 @@ async function poll() {
       !activeDetectJobId
     ) {
       detectStopRequested = false;
+      endDetectSession();
       updateDetectButtonState();
       stopPolling();
       return;
@@ -1338,7 +1612,8 @@ async function poll() {
       (state.detect_status === "running" ||
         (state.detect_queue_pending || 0) > 0 ||
         ((state.detect_batch_total || 0) > (state.detect_batch_done || 0) &&
-          state.detect_status !== "error"));
+          state.detect_status !== "error" &&
+          state.detect_status !== "cancelled"));
     const needsDetectUI =
       isDetectActive(state) ||
       !!activeDetectJobId ||
@@ -1407,6 +1682,14 @@ els.detectFrameMore.addEventListener("click", () => {
 });
 
 els.resetTimelineBtn?.addEventListener("click", resetTimeline);
+els.generateReportBtn?.addEventListener("click", generateDetectionReport);
+
+els.refreshModelsBtn?.addEventListener("click", () => {
+  modelListKey = "";
+  loadModels();
+});
+
+els.modelList?.addEventListener("click", handleModelAction);
 
 els.frameResults.addEventListener("click", handleTimelineFrameClick);
 els.frameResults.addEventListener("dblclick", handleFrameCardDblClick);
@@ -1685,12 +1968,13 @@ els.stopDetectBtn?.addEventListener("click", async () => {
 
 els.lakeDiscoverBtn?.addEventListener("click", discoverLakeVideos);
 
-els.lakeProfile?.addEventListener("change", async () => {
-  lakeProfileId = els.lakeProfile.value;
-  lakeVideosReady = 0;
-  setStatus(els.lakeDiscoverStatus, "");
-  await loadLakeConfig(lakeProfileId);
-  updateDetectButtonState();
+[els.lakeMedia, els.lakeYearFolder, els.lakeVessel, els.lakeStream].forEach((selectEl) => {
+  selectEl?.addEventListener("change", () => {
+    lakeVideosReady = 0;
+    setStatus(els.lakeDiscoverStatus, "");
+    updateLakeUrlPreview();
+    updateDetectButtonState();
+  });
 });
 
 document.querySelectorAll('input[name="detectSource"]').forEach((input) => {
@@ -1720,6 +2004,7 @@ els.detectBtn.addEventListener("click", async () => {
     const range = readLakeRange();
     const batchTotal = lakeVideosReady;
     beginDetectSession(batchTotal);
+    setStatus(els.detectStatus, `영상 다운로드·탐지 준비 중... (${batchTotal}개)`);
     try {
       const result = await api("/api/pipeline/detect/lake", {
         method: "POST",
@@ -1731,7 +2016,7 @@ els.detectBtn.addEventListener("click", async () => {
           check_exists: true,
         }),
       });
-      finishDetectStart(result, batchTotal);
+      await finishDetectStart(result, batchTotal);
     } catch (err) {
       activeDetectJobId = null;
       endDetectSession();
@@ -1759,7 +2044,7 @@ els.detectBtn.addEventListener("click", async () => {
   setStatus(els.detectStatus, `비디오 업로드 중... (${files.length}개)`);
   try {
     const result = await api("/api/pipeline/detect", { method: "POST", body: form });
-    finishDetectStart(result, files.length);
+    await finishDetectStart(result, files.length);
   } catch (err) {
     activeDetectJobId = null;
     endDetectSession();
@@ -1794,6 +2079,7 @@ api("/api/pipeline/state")
     }
     renderPipelineState(state);
     lastPipelineState = state;
+    renderModels(state.models, state.active_model_id);
     const timelineCount =
       state.detect_timeline?.segment_count ??
       state.detect_timeline_events ??

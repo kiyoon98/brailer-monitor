@@ -13,7 +13,13 @@ import cv2
 
 from ..cvat_import import inspect_cvat
 from ..dataset_preview import list_dataset_frames, render_dataset_preview
-from ..lake_video_source import discover_videos_in_range, list_candidate_videos, list_lake_profile_summaries, load_lake_video_config
+from ..detect_report import write_detection_report_bundle
+from ..lake_video_source import (
+    build_lake_config_from_selection,
+    discover_videos_in_range,
+    list_candidate_videos,
+    load_lake_component_spec,
+)
 from .annotation import AnnotationManager
 from .detect_pipeline import DetectPipelineManager
 
@@ -21,6 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 JOBS_ROOT = PROJECT_ROOT / "data" / "web_jobs"
 PIPELINE_ROOT = PROJECT_ROOT / "data" / "pipeline"
+REPORTS_ROOT = PIPELINE_ROOT / "reports"
 DATASET_ROOT = PROJECT_ROOT / "data" / "dataset"
 CONFIG_DIR = PROJECT_ROOT / "config"
 RAW_VIDEO = PROJECT_ROOT / "data" / "raw" / "JJR-102283_stream04_260310_202016.mp4"
@@ -41,7 +48,10 @@ class CaptureRequest(BaseModel):
 
 
 class LakeRangeRequest(BaseModel):
-    profile: str | None = None
+    media: str | None = None
+    year_folder: str | None = None
+    vessel: str | None = None
+    stream: str | None = None
     start_month: int = Field(ge=1, le=12)
     start_day: int = Field(ge=1, le=31)
     start_hour: int = Field(ge=0, le=23)
@@ -224,6 +234,45 @@ async def pipeline_train_reset_and_start(body: TrainRequest) -> dict:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+class RenameModelRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+@app.get("/api/pipeline/models")
+async def pipeline_models() -> dict:
+    return pipeline.list_models()
+
+
+@app.post("/api/pipeline/models/{model_id}/activate")
+async def pipeline_model_activate(model_id: str) -> dict:
+    try:
+        return pipeline.activate_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/pipeline/models/{model_id}/rename")
+async def pipeline_model_rename(model_id: str, body: RenameModelRequest) -> dict:
+    try:
+        return pipeline.rename_model(model_id, body.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/pipeline/models/{model_id}")
+async def pipeline_model_delete(model_id: str) -> dict:
+    try:
+        return pipeline.delete_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/pipeline/detect/stop")
 async def pipeline_detect_stop() -> dict:
     return pipeline.cancel_detection()
@@ -272,32 +321,31 @@ async def pipeline_detect(
 
 
 @app.get("/api/pipeline/lake-videos/config")
-async def pipeline_lake_video_config(profile: str | None = None) -> dict:
-    config_path = CONFIG_DIR / "lake_video.json"
-    profiles = list_lake_profile_summaries(config_path)
-    config = load_lake_video_config(config_path, profile=profile)
+async def pipeline_lake_video_config() -> dict:
+    spec = load_lake_component_spec(CONFIG_DIR / "lake_video.json")
     return {
-        "profile": config.profile_id,
-        "profiles": profiles,
-        "base_url": config.base_url,
-        "file_prefix": config.file_prefix,
-        "year": config.year,
-        "minute_slots": list(config.minute_slots),
-        "second_suffixes": list(config.second_suffixes),
+        "base_host": spec["base_host"],
+        "components": spec["components"],
+        "minute_slots": spec["minute_slots"],
     }
 
 
-def _load_lake_config(profile: str | None):
-    try:
-        return load_lake_video_config(CONFIG_DIR / "lake_video.json", profile=profile)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _load_lake_config(body: LakeRangeRequest):
+    return build_lake_config_from_selection(
+        {
+            "media": body.media,
+            "year_folder": body.year_folder,
+            "vessel": body.vessel,
+            "stream": body.stream,
+        },
+        path=CONFIG_DIR / "lake_video.json",
+    )
 
 
 @app.post("/api/pipeline/lake-videos/discover")
 async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
-    config = _load_lake_config(body.profile)
     try:
+        config = _load_lake_config(body)
         candidates = list_candidate_videos(
             start_month=body.start_month,
             start_day=body.start_day,
@@ -325,6 +373,8 @@ async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
         "found_count": len(videos),
         "profile": config.profile_id,
         "base_url": config.base_url,
+        "file_prefix": config.file_prefix,
+        "year": config.year,
         "videos": videos[:24],
         "sample_missing": max(0, len(candidates) - len(videos)),
     }
@@ -332,8 +382,8 @@ async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
 
 @app.post("/api/pipeline/detect/lake")
 async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
-    config = _load_lake_config(body.profile)
     try:
+        config = _load_lake_config(body)
         videos = discover_videos_in_range(
             start_month=body.start_month,
             start_day=body.start_day,
@@ -378,6 +428,39 @@ async def pipeline_detect_timeline_segment(segment_id: str) -> dict:
 @app.post("/api/pipeline/detect/timeline/reset")
 async def pipeline_detect_timeline_reset() -> dict:
     return {"timeline": pipeline.reset_timeline()}
+
+
+def _generate_detection_report() -> dict:
+    timeline_path = PIPELINE_ROOT / "detect_timeline.json"
+    return write_detection_report_bundle(timeline_path, REPORTS_ROOT)
+
+
+@app.post("/api/pipeline/detect/report/create")
+@app.get("/api/pipeline/detect/report/create")
+@app.post("/api/pipeline/detect/report")
+@app.get("/api/pipeline/detect/report")
+async def pipeline_detect_report() -> dict:
+    try:
+        return _generate_detection_report()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/pipeline/detect/report/{filename}")
+async def pipeline_detect_report_file(filename: str) -> FileResponse:
+    path = REPORTS_ROOT / filename
+    if path.name != filename or path.suffix.lower() not in {".html", ".csv", ".json"}:
+        raise HTTPException(status_code=400, detail="Invalid report filename")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Report not found")
+    media_type = {
+        ".html": "text/html; charset=utf-8",
+        ".csv": "text/csv; charset=utf-8",
+        ".json": "application/json",
+    }[path.suffix.lower()]
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @app.get("/api/pipeline/detect/{job_id}")

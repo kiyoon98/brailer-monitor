@@ -12,6 +12,7 @@ from brailer_monitor.lake_video_source import (
     LakeVideoConfig,
     build_filename,
     build_folder_path,
+    build_lake_config_from_selection,
     discover_videos_in_range,
     iter_hours_in_range,
     list_candidate_videos,
@@ -169,6 +170,50 @@ class LakeVideoSourceTests(unittest.TestCase):
             self.assertEqual(config.profile_id, "lake_aurora")
             self.assertEqual(config.file_prefix, "LAKE_AURORA_stream03")
             self.assertEqual(config.second_suffixes, ("23",))
+
+    def test_build_config_from_component_selection(self) -> None:
+        spec = {
+            "base_host": "http://example.invalid/media/",
+            "minute_slots": [0, 30],
+            "components": {
+                "media": {"default": "lake_win", "options": ["lake_win", "lake_aurora"]},
+                "year_folder": {"default": "2026_decrypted", "options": ["2025_decrypted", "2026_decrypted"]},
+                "vessel": {"default": "JJR-102283", "options": ["JJR-102283", "LAKE_AURORA"]},
+                "stream": {"default": "stream04", "options": ["stream03", "stream04"]},
+                "suffix": {"default": "16", "options": ["16", "23"]},
+            },
+        }
+
+        config = build_lake_config_from_selection(
+            {
+                "media": "lake_aurora",
+                "year_folder": "2025_decrypted",
+                "vessel": "LAKE_AURORA",
+                "stream": "stream03",
+            },
+            spec=spec,
+        )
+
+        self.assertEqual(config.base_url, "http://example.invalid/media/lake_aurora/2025_decrypted/")
+        self.assertEqual(config.file_prefix, "LAKE_AURORA_stream03")
+        self.assertEqual(config.year, 2025)
+        self.assertEqual(config.minute_slots, (0, 30))
+        self.assertEqual(config.second_suffixes, ("16", "23"))
+
+    def test_component_selection_rejects_unknown_values(self) -> None:
+        spec = {
+            "base_host": "http://example.invalid/media/",
+            "minute_slots": [0],
+            "components": {
+                "media": {"default": "lake_win", "options": ["lake_win"]},
+                "year_folder": {"default": "2026_decrypted", "options": ["2026_decrypted"]},
+                "vessel": {"default": "JJR-102283", "options": ["JJR-102283"]},
+                "stream": {"default": "stream04", "options": ["stream04"]},
+            },
+        }
+
+        with self.assertRaises(ValueError):
+            build_lake_config_from_selection({"media": "../other"}, spec=spec)
 
 
 if __name__ == "__main__":

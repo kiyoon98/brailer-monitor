@@ -46,6 +46,15 @@
         <span id="trainProgressText" class="progress-text"></span>
       </div>
       <div id="trainStatus" class="status"></div>
+
+      <div class="model-library">
+        <div class="model-library-head">
+          <h3>학습된 모델 <span id="modelCount" class="badge">0</span></h3>
+          <button id="refreshModelsBtn" type="button" class="secondary small">새로고침</button>
+        </div>
+        <p class="hint">학습할 때마다 모델이 자동 저장됩니다. 원하는 모델을 선택하면 탐지에 사용됩니다.</p>
+        <div id="modelList" class="model-list"></div>
+      </div>
     </section>
 
     <section class="panel full">
@@ -61,10 +70,13 @@
         </label>
       </div>
       <div id="detectLakeSection" class="hidden">
-        <label>영상 프로필
-          <select id="lakeProfile"></select>
-        </label>
-        <p id="lakeBaseUrl" class="hint"></p>
+        <div class="row lake-parts">
+          <label>미디어 <select id="lakeMedia"></select></label>
+          <label>연도 <select id="lakeYearFolder"></select></label>
+          <label>선박 <select id="lakeVessel"></select></label>
+          <label>스트림 <select id="lakeStream"></select></label>
+        </div>
+        <p id="lakeUrlPreview" class="hint"></p>
         <div class="row lake-range">
           <span class="range-label">시작</span>
           <label>월 <input id="lakeStartMonth" type="number" min="1" max="12" value="3" /></label>
@@ -119,6 +131,11 @@
     <section class="panel full">
       <h2>탐지 타임라인 <span id="frameCount" class="badge">0</span></h2>
       <p class="timeline-legend hint">백분율 = YOLO 신뢰도 · 면적 = 탐지 픽셀 수 · 썸네일 클릭: 확대 · 더블클릭: 세그먼트 전체</p>
+      <div class="report-actions">
+        <button id="generateReportBtn" type="button" class="secondary">외부 문서 생성</button>
+        <span id="reportStatus" class="hint"></span>
+        <div id="reportLinks" class="report-links"></div>
+      </div>
       <div id="timelineAxis" class="timeline-axis hidden">
         <div class="timeline-toolbar">
           <span class="toolbar-label">타임라인</span>
@@ -171,6 +188,6 @@
     </div>
   </div>
 
-  <script src="/static/detect.js?v=33"></script>
+  <script src="/static/detect.js?v=41"></script>
 </body>
 </html>
