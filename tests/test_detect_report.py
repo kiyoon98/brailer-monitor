@@ -35,6 +35,9 @@ class DetectReportTests(unittest.TestCase):
                                     "confidence": 0.7,
                                     "bbox_xyxy": [1, 2, 11, 12],
                                     "area_px": 100,
+                                    "mask_area_px": 100,
+                                    "mask_width_px": 10,
+                                    "mask_height_px": 10,
                                 }
                             ],
                             "preview_path": "frame_000010.jpg",
@@ -48,6 +51,9 @@ class DetectReportTests(unittest.TestCase):
                                     "confidence": 0.95,
                                     "bbox_xyxy": [3, 4, 13, 14],
                                     "area_px": 110,
+                                    "mask_area_px": 110,
+                                    "mask_width_px": 11,
+                                    "mask_height_px": 10,
                                 }
                             ],
                             "preview_path": "frame_000015.jpg",
@@ -65,6 +71,12 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(row.bbox_x1, 3.0)
             self.assertEqual(row.duration_sec, 0.5)
             self.assertEqual(row.sample_window_sec, 1.0)
+            self.assertEqual(row.mask_area_px, 110)
+            self.assertEqual(row.avg_mask_area_px, 105.0)
+            self.assertEqual(row.max_mask_area_px, 110)
+            self.assertEqual(row.avg_mask_width_px, 10.5)
+            self.assertEqual(row.max_mask_width_px, 11)
+            self.assertEqual(row.avg_mask_height_px, 10.0)
 
     def test_write_report_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -19,6 +19,19 @@ def _empty_timeline() -> dict[str, Any]:
     return {"updated_at": _now_iso(), "videos": [], "events": []}
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def load_timeline(path: Path) -> dict[str, Any]:
     if not path.exists():
         return _empty_timeline()
@@ -48,6 +61,11 @@ def _video_duration_sec(manifest: dict[str, Any]) -> float:
 
 def detection_area_px(det: dict[str, Any]) -> int:
     """Pixel area inside the detection mask, or bounding-box area as fallback."""
+    mask_area = det.get("mask_area_px")
+    if mask_area is not None:
+        mask_area_int = int(mask_area)
+        if mask_area_int > 0:
+            return mask_area_int
     area = det.get("area_px")
     if area is not None:
         area_int = int(area)
@@ -66,6 +84,10 @@ def _frame_to_dict(
     confidence: float,
     area_px: int,
     bbox_xyxy: list[float] | None = None,
+    polygon_xy: list[list[float]] | None = None,
+    mask_area_px: int | None = None,
+    mask_width_px: int | None = None,
+    mask_height_px: int | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "job_id": event["job_id"],
@@ -81,6 +103,15 @@ def _frame_to_dict(
     }
     if bbox_xyxy:
         out["bbox_xyxy"] = bbox_xyxy
+    if polygon_xy:
+        out["polygon_xy"] = polygon_xy
+        out["polygon_point_count"] = len(polygon_xy)
+    if mask_area_px is not None:
+        out["mask_area_px"] = int(mask_area_px)
+    if mask_width_px is not None:
+        out["mask_width_px"] = int(mask_width_px)
+    if mask_height_px is not None:
+        out["mask_height_px"] = int(mask_height_px)
     return out
 
 
@@ -98,6 +129,7 @@ def expand_class_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 best[cls] = det
         for cls, det in best.items():
             bbox = det.get("bbox_xyxy")
+            polygon = det.get("polygon_xy")
             expanded.append(
                 _frame_to_dict(
                     event,
@@ -105,6 +137,10 @@ def expand_class_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     confidence=float(det.get("confidence", 0)),
                     area_px=detection_area_px(det),
                     bbox_xyxy=list(bbox) if isinstance(bbox, list) and len(bbox) == 4 else None,
+                    polygon_xy=list(polygon) if isinstance(polygon, list) and polygon else None,
+                    mask_area_px=det.get("mask_area_px"),
+                    mask_width_px=det.get("mask_width_px"),
+                    mask_height_px=det.get("mask_height_px"),
                 )
             )
     return expanded
@@ -131,7 +167,65 @@ def merge_consecutive_frames(
     return groups
 
 
+def _frame_sort_key(frame: dict[str, Any]) -> tuple[str, str, float, int]:
+    return (
+        str(frame.get("absolute_time") or ""),
+        str(frame.get("video_name") or ""),
+        float(frame.get("timestamp_sec") or 0.0),
+        int(frame.get("frame_index") or 0),
+    )
+
+
+def _segment_start_dt(frames: list[dict[str, Any]]) -> datetime | None:
+    return _parse_iso_datetime(frames[0].get("absolute_time")) if frames else None
+
+
+def _segment_end_dt(frames: list[dict[str, Any]]) -> datetime | None:
+    return _parse_iso_datetime(frames[-1].get("absolute_time")) if frames else None
+
+
+def merge_segment_groups_by_time_gap(
+    groups: list[list[dict[str, Any]]],
+    *,
+    max_gap_sec: float,
+) -> list[list[dict[str, Any]]]:
+    """Merge adjacent detection segments for the same class when the time gap is small."""
+    if not groups or max_gap_sec <= 0:
+        return groups
+
+    ordered = sorted(
+        groups,
+        key=lambda group: (
+            str(group[0].get("class_name") or ""),
+            _frame_sort_key(group[0]),
+        ),
+    )
+    merged: list[list[dict[str, Any]]] = []
+    for group in ordered:
+        group = sorted(group, key=_frame_sort_key)
+        if not merged:
+            merged.append(group)
+            continue
+
+        prev = merged[-1]
+        same_class = prev[-1].get("class_name") == group[0].get("class_name")
+        prev_end = _segment_end_dt(prev)
+        next_start = _segment_start_dt(group)
+        can_merge = False
+        if same_class and prev_end is not None and next_start is not None:
+            gap = (next_start - prev_end).total_seconds()
+            can_merge = 0 <= gap <= max_gap_sec
+
+        if can_merge:
+            prev.extend(group)
+            prev.sort(key=_frame_sort_key)
+        else:
+            merged.append(group)
+    return sorted(merged, key=lambda group: _frame_sort_key(group[0]))
+
+
 def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
+    frames = sorted(frames, key=_frame_sort_key)
     first = frames[0]
     last = frames[-1]
     start_dt = first.get("absolute_time")
@@ -151,12 +245,16 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
     confidences = [float(f.get("confidence", 0)) for f in frames]
     areas = [int(f.get("area_px") or 0) for f in frames]
     best_area_frame = max(frames, key=lambda f: int(f.get("area_px") or 0), default=frames[0])
+    video_names = list(dict.fromkeys(str(f.get("video_name") or "") for f in frames if f.get("video_name")))
+    job_ids = list(dict.fromkeys(str(f.get("job_id") or "") for f in frames if f.get("job_id")))
     segment_id = f"{first['job_id']}:{first['class_name']}:{first.get('frame_index', 0)}"
 
     out: dict[str, Any] = {
         "segment_id": segment_id,
         "job_id": first["job_id"],
-        "video_name": first["video_name"],
+        "video_name": first["video_name"] if len(video_names) <= 1 else f"{first['video_name']} 외 {len(video_names) - 1}개",
+        "video_names": video_names,
+        "job_ids": job_ids,
         "class_name": first["class_name"],
         "start_absolute_time": start_dt,
         "end_absolute_time": end_dt,
@@ -174,10 +272,29 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
     bbox = best_area_frame.get("bbox_xyxy")
     if isinstance(bbox, list) and len(bbox) == 4:
         out["bbox_xyxy"] = bbox
+    polygon = best_area_frame.get("polygon_xy")
+    if isinstance(polygon, list) and polygon:
+        out["polygon_xy"] = polygon
+        out["polygon_point_count"] = len(polygon)
+    for key in ("mask_area_px", "mask_width_px", "mask_height_px"):
+        value = best_area_frame.get(key)
+        if value is not None:
+            out[key] = int(value)
     return out
 
 
-def build_segments(timeline: dict[str, Any]) -> list[dict[str, Any]]:
+def _timeline_merge_gap_sec(timeline: dict[str, Any]) -> float:
+    try:
+        return max(0.0, float(timeline.get("segment_merge_gap_sec") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_segment_frame_groups(
+    timeline: dict[str, Any],
+    *,
+    merge_gap_sec: float | None = None,
+) -> list[list[dict[str, Any]]]:
     videos_by_name = {video["video_name"]: video for video in timeline.get("videos", [])}
     class_frames: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
 
@@ -185,12 +302,24 @@ def build_segments(timeline: dict[str, Any]) -> list[dict[str, Any]]:
         key = (frame["video_name"], frame["class_name"])
         class_frames[key].append(frame)
 
-    segments: list[dict[str, Any]] = []
+    groups: list[list[dict[str, Any]]] = []
     for (video_name, _class_name), frames in class_frames.items():
         stride = int(videos_by_name.get(video_name, {}).get("frame_stride") or 5)
         for group in merge_consecutive_frames(frames, frame_stride=stride):
-            segments.append(_segment_from_frames(group))
+            groups.append(group)
 
+    gap = _timeline_merge_gap_sec(timeline) if merge_gap_sec is None else max(0.0, float(merge_gap_sec))
+    if gap > 0:
+        groups = merge_segment_groups_by_time_gap(groups, max_gap_sec=gap)
+    return sorted(groups, key=lambda group: _frame_sort_key(group[0]))
+
+
+def build_segments(
+    timeline: dict[str, Any],
+    *,
+    merge_gap_sec: float | None = None,
+) -> list[dict[str, Any]]:
+    segments = [_segment_from_frames(group) for group in build_segment_frame_groups(timeline, merge_gap_sec=merge_gap_sec)]
     segments.sort(
         key=lambda segment: (
             segment.get("start_absolute_time") or "",
@@ -199,6 +328,26 @@ def build_segments(timeline: dict[str, Any]) -> list[dict[str, Any]]:
         )
     )
     return segments
+
+
+def compact_timeline_segments(path: Path, *, max_gap_sec: float = 5.0) -> dict[str, Any]:
+    """Persist a display/report merge gap for the accumulated detection timeline."""
+    timeline = load_timeline(path)
+    if max_gap_sec < 0:
+        raise ValueError("max_gap_sec must be greater than or equal to 0")
+    before = len(build_segments(timeline, merge_gap_sec=0))
+    timeline["segment_merge_gap_sec"] = float(max_gap_sec)
+    save_timeline(path, timeline)
+    after_timeline = load_timeline(path)
+    after = len(build_segments(after_timeline))
+    return {
+        "event_count": len(after_timeline.get("events", [])),
+        "video_count": len(after_timeline.get("videos", [])),
+        "before_segment_count": before,
+        "segment_count": after,
+        "merged_segment_count": max(0, before - after),
+        "segment_merge_gap_sec": float(max_gap_sec),
+    }
 
 
 def timeline_range(timeline: dict[str, Any]) -> dict[str, Any]:
@@ -234,21 +383,12 @@ def timeline_range(timeline: dict[str, Any]) -> dict[str, Any]:
 
 def get_segment_frames(path: Path, segment_id: str) -> dict[str, Any]:
     timeline = load_timeline(path)
-    videos_by_name = {video["video_name"]: video for video in timeline.get("videos", [])}
     segments = build_segments(timeline)
     segment = next((item for item in segments if item["segment_id"] == segment_id), None)
     if segment is None:
         raise KeyError(segment_id)
 
-    video_name = segment["video_name"]
-    class_name = segment["class_name"]
-    stride = int(videos_by_name.get(video_name, {}).get("frame_stride") or 5)
-    frames = [
-        frame
-        for frame in expand_class_events(timeline.get("events", []))
-        if frame["video_name"] == video_name and frame["class_name"] == class_name
-    ]
-    groups = merge_consecutive_frames(frames, frame_stride=stride)
+    groups = build_segment_frame_groups(timeline)
     group = next(
         (item for item in groups if _segment_from_frames(item)["segment_id"] == segment_id),
         None,
@@ -353,6 +493,11 @@ def list_timeline(
             "max_confidence": segment.get("max_confidence"),
             "max_area_px": segment.get("max_area_px"),
             "bbox_xyxy": segment.get("bbox_xyxy"),
+            "polygon_xy": segment.get("polygon_xy"),
+            "polygon_point_count": segment.get("polygon_point_count"),
+            "mask_area_px": segment.get("mask_area_px"),
+            "mask_width_px": segment.get("mask_width_px"),
+            "mask_height_px": segment.get("mask_height_px"),
         }
         for segment in segments
     ]
@@ -362,6 +507,7 @@ def list_timeline(
         "limit": limit,
         "video_count": len(timeline.get("videos", [])),
         "event_count": len(timeline.get("events", [])),
+        "segment_merge_gap_sec": _timeline_merge_gap_sec(timeline),
         "segments": page,
         "axis_segments": axis_segments,
         "videos": timeline.get("videos", []),
@@ -376,4 +522,5 @@ def timeline_summary(path: Path) -> dict[str, Any]:
         "event_count": len(timeline.get("events", [])),
         "segment_count": len(segments),
         "video_count": len(timeline.get("videos", [])),
+        "segment_merge_gap_sec": _timeline_merge_gap_sec(timeline),
     }

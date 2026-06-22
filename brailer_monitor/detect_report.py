@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .detect_timeline import expand_class_events, load_timeline, merge_consecutive_frames
+from .detect_timeline import build_segment_frame_groups, load_timeline
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,16 @@ class DetectionSegmentReportRow:
     bbox_x2: float | None
     bbox_y2: float | None
     area_px: int
+    mask_area_px: int
+    mask_width_px: int
+    mask_height_px: int
+    polygon_point_count: int
+    avg_mask_area_px: float
+    max_mask_area_px: int
+    avg_mask_width_px: float
+    max_mask_width_px: int
+    avg_mask_height_px: float
+    max_mask_height_px: int
     video_name: str
     job_id: str
     preview_path: str | None
@@ -75,10 +85,52 @@ REPORT_FIELDS = [
     "bbox_x2",
     "bbox_y2",
     "area_px",
+    "mask_area_px",
+    "mask_width_px",
+    "mask_height_px",
+    "polygon_point_count",
+    "avg_mask_area_px",
+    "max_mask_area_px",
+    "avg_mask_width_px",
+    "max_mask_width_px",
+    "avg_mask_height_px",
+    "max_mask_height_px",
     "video_name",
     "job_id",
     "preview_path",
 ]
+
+
+def _parse_report_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _positive_numbers(items: list[dict[str, Any]], key: str, *, fallback_key: str | None = None) -> list[float]:
+    values: list[float] = []
+    for item in items:
+        raw = item.get(key)
+        if raw is None and fallback_key is not None:
+            raw = item.get(fallback_key)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    return values
+
+
+def _avg(values: list[float]) -> float:
+    return round(sum(values) / len(values), 2) if values else 0.0
 
 
 def build_detection_report(timeline_path: Path) -> DetectionReport:
@@ -86,53 +138,67 @@ def build_detection_report(timeline_path: Path) -> DetectionReport:
     videos = timeline.get("videos", []) or []
     events = timeline.get("events", []) or []
     videos_by_name = {video.get("video_name"): video for video in videos if video.get("video_name")}
-    frames_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
-
-    for frame in expand_class_events(events):
-        key = (str(frame["video_name"]), str(frame["class_name"]))
-        frames_by_key.setdefault(key, []).append(frame)
 
     rows: list[DetectionSegmentReportRow] = []
-    for (video_name, class_name), frames in frames_by_key.items():
+    for group in build_segment_frame_groups(timeline):
+        first = group[0]
+        last = group[-1]
+        video_name = str(first.get("video_name") or "")
+        class_name = str(first.get("class_name") or "")
         video = videos_by_name.get(video_name, {})
         stride = int(video.get("frame_stride") or 5)
         fps = float(video.get("fps") or 15.0)
         sample_step = stride / fps if fps > 0 else 0.0
 
-        for group in merge_consecutive_frames(frames, frame_stride=stride):
-            first = group[0]
-            last = group[-1]
-            best = max(group, key=lambda item: float(item.get("confidence") or 0.0))
-            bbox = best.get("bbox_xyxy")
-            bbox_vals = [float(v) for v in bbox] if isinstance(bbox, list) and len(bbox) == 4 else [None] * 4
-            start_ts = float(first.get("timestamp_sec") or 0.0)
-            end_ts = float(last.get("timestamp_sec") or start_ts)
+        best = max(group, key=lambda item: float(item.get("confidence") or 0.0))
+        bbox = best.get("bbox_xyxy")
+        bbox_vals = [float(v) for v in bbox] if isinstance(bbox, list) and len(bbox) == 4 else [None] * 4
+        start_ts = float(first.get("timestamp_sec") or 0.0)
+        end_ts = float(last.get("timestamp_sec") or start_ts)
+        start_abs = _parse_report_time(first.get("absolute_time"))
+        end_abs = _parse_report_time(last.get("absolute_time"))
+        if start_abs is not None and end_abs is not None:
+            duration = max(0.0, (end_abs - start_abs).total_seconds())
+        else:
             duration = max(0.0, end_ts - start_ts)
-            confidence = float(best.get("confidence") or 0.0)
+        confidence = float(best.get("confidence") or 0.0)
+        mask_areas = _positive_numbers(group, "mask_area_px", fallback_key="area_px")
+        mask_widths = _positive_numbers(group, "mask_width_px")
+        mask_heights = _positive_numbers(group, "mask_height_px")
 
-            rows.append(
-                DetectionSegmentReportRow(
-                    start_time=str(first.get("absolute_time_label") or ""),
-                    end_time=str(last.get("absolute_time_label") or ""),
-                    duration_sec=round(duration, 3),
-                    sample_window_sec=round(duration + sample_step, 3),
-                    frame_count=len(group),
-                    class_name=class_name,
-                    best_match_pct=round(confidence * 100, 2),
-                    best_confidence=round(confidence, 4),
-                    best_time=str(best.get("absolute_time_label") or ""),
-                    best_frame_index=best.get("frame_index"),
-                    best_timestamp_sec=best.get("timestamp_sec"),
-                    bbox_x1=bbox_vals[0],
-                    bbox_y1=bbox_vals[1],
-                    bbox_x2=bbox_vals[2],
-                    bbox_y2=bbox_vals[3],
-                    area_px=int(best.get("area_px") or 0),
-                    video_name=video_name,
-                    job_id=str(best.get("job_id") or ""),
-                    preview_path=best.get("preview_path"),
-                )
+        rows.append(
+            DetectionSegmentReportRow(
+                start_time=str(first.get("absolute_time_label") or ""),
+                end_time=str(last.get("absolute_time_label") or ""),
+                duration_sec=round(duration, 3),
+                sample_window_sec=round(duration + sample_step, 3),
+                frame_count=len(group),
+                class_name=class_name,
+                best_match_pct=round(confidence * 100, 2),
+                best_confidence=round(confidence, 4),
+                best_time=str(best.get("absolute_time_label") or ""),
+                best_frame_index=best.get("frame_index"),
+                best_timestamp_sec=best.get("timestamp_sec"),
+                bbox_x1=bbox_vals[0],
+                bbox_y1=bbox_vals[1],
+                bbox_x2=bbox_vals[2],
+                bbox_y2=bbox_vals[3],
+                area_px=int(best.get("area_px") or 0),
+                mask_area_px=int(best.get("mask_area_px") or best.get("area_px") or 0),
+                mask_width_px=int(best.get("mask_width_px") or 0),
+                mask_height_px=int(best.get("mask_height_px") or 0),
+                polygon_point_count=int(best.get("polygon_point_count") or len(best.get("polygon_xy") or [])),
+                avg_mask_area_px=_avg(mask_areas),
+                max_mask_area_px=int(max(mask_areas, default=0)),
+                avg_mask_width_px=_avg(mask_widths),
+                max_mask_width_px=int(max(mask_widths, default=0)),
+                avg_mask_height_px=_avg(mask_heights),
+                max_mask_height_px=int(max(mask_heights, default=0)),
+                video_name=video_name,
+                job_id=str(best.get("job_id") or ""),
+                preview_path=best.get("preview_path"),
             )
+        )
 
     rows.sort(key=lambda row: (row.start_time, row.video_name, row.best_frame_index or 0))
     durations = [row.duration_sec for row in rows]
@@ -157,6 +223,24 @@ def _bbox_label(row: DetectionSegmentReportRow) -> str:
     return "[" + ", ".join(f"{float(value):.1f}" for value in vals) + "]"
 
 
+def _mask_label(row: DetectionSegmentReportRow) -> str:
+    if row.mask_area_px <= 0:
+        return "-"
+    size = f"{row.mask_width_px}x{row.mask_height_px}" if row.mask_width_px and row.mask_height_px else "-"
+    return f"{row.mask_area_px} px / {size} / {row.polygon_point_count}점"
+
+
+def _segment_mask_stats_label(row: DetectionSegmentReportRow) -> str:
+    if row.avg_mask_area_px <= 0:
+        return "-"
+    width = f"{row.avg_mask_width_px:.1f}" if row.avg_mask_width_px > 0 else "-"
+    height = f"{row.avg_mask_height_px:.1f}" if row.avg_mask_height_px > 0 else "-"
+    return (
+        f"avg {row.avg_mask_area_px:.1f} px / {width}x{height}"
+        f"<br>max {row.max_mask_area_px} px / {row.max_mask_width_px}x{row.max_mask_height_px}"
+    )
+
+
 def _render_table_rows(rows: list[DetectionSegmentReportRow]) -> str:
     rendered = []
     for row in rows:
@@ -170,7 +254,8 @@ def _render_table_rows(rows: list[DetectionSegmentReportRow]) -> str:
             f"<td>{row.best_match_pct:.2f}%</td>"
             f"<td>{html.escape(row.best_time)}</td>"
             f"<td>{html.escape(_bbox_label(row))}</td>"
-            f"<td>{row.area_px}</td>"
+            f"<td>{html.escape(_mask_label(row))}</td>"
+            f"<td>{_segment_mask_stats_label(row)}</td>"
             f"<td>{html.escape(row.video_name)}</td>"
             "</tr>"
         )
@@ -213,19 +298,19 @@ def render_detection_report_html(report: DetectionReport) -> str:
 
   <h2>연속 시간이 긴 대표 구간</h2>
   <table>
-    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>면적</th><th>영상</th></tr></thead>
+    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>영상</th></tr></thead>
     <tbody>{_render_table_rows(top_duration)}</tbody>
   </table>
 
   <h2>일치율이 높은 대표 구간</h2>
   <table>
-    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>면적</th><th>영상</th></tr></thead>
+    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>영상</th></tr></thead>
     <tbody>{_render_table_rows(top_confidence)}</tbody>
   </table>
 
   <h2>전체 연속 탐지 구간</h2>
   <table>
-    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>면적</th><th>영상</th></tr></thead>
+    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>영상</th></tr></thead>
     <tbody>{_render_table_rows(report.rows)}</tbody>
   </table>
 </body>

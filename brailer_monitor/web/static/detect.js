@@ -38,6 +38,13 @@ const els = {
   detectBtn: document.getElementById("detectBtn"),
   stopDetectBtn: document.getElementById("stopDetectBtn"),
   resetTimelineBtn: document.getElementById("resetTimelineBtn"),
+  saveResultName: document.getElementById("saveResultName"),
+  saveResultBtn: document.getElementById("saveResultBtn"),
+  savedResultSelect: document.getElementById("savedResultSelect"),
+  loadResultBtn: document.getElementById("loadResultBtn"),
+  savedResultStatus: document.getElementById("savedResultStatus"),
+  compactTimelineBtn: document.getElementById("compactTimelineBtn"),
+  compactTimelineStatus: document.getElementById("compactTimelineStatus"),
   generateReportBtn: document.getElementById("generateReportBtn"),
   reportStatus: document.getElementById("reportStatus"),
   reportLinks: document.getElementById("reportLinks"),
@@ -965,7 +972,21 @@ function formatAreaPx(areaPx) {
 function formatSegmentStats(segmentOrFrame) {
   const conf = formatConfidence(segmentOrFrame.max_confidence ?? segmentOrFrame.confidence);
   const area = formatAreaPx(resolveAreaPx(segmentOrFrame));
-  return `신뢰도 ${conf} · 면적 ${area}`;
+  const maskArea = Number(segmentOrFrame.mask_area_px);
+  const maskWidth = Number(segmentOrFrame.mask_width_px);
+  const maskHeight = Number(segmentOrFrame.mask_height_px);
+  const polygonPoints = Number(segmentOrFrame.polygon_point_count);
+  const parts = [`신뢰도 ${conf}`, `면적 ${area}`];
+  if (Number.isFinite(maskArea) && maskArea > 0) {
+    parts.push(`mask ${formatAreaPx(maskArea)}`);
+  }
+  if (Number.isFinite(maskWidth) && maskWidth > 0 && Number.isFinite(maskHeight) && maskHeight > 0) {
+    parts.push(`mask ${maskWidth}x${maskHeight}`);
+  }
+  if (Number.isFinite(polygonPoints) && polygonPoints > 0) {
+    parts.push(`polygon ${polygonPoints}점`);
+  }
+  return parts.join(" · ");
 }
 
 function framePreviewSrc(frame) {
@@ -1455,6 +1476,130 @@ async function resetTimeline() {
   }
 }
 
+async function compactTimeline() {
+  if (!els.compactTimelineBtn) return;
+  const detectionRunning = isDetectLive(lastPipelineState) || isDetectBusy(lastPipelineState);
+  if (detectionRunning && !confirm("탐지가 진행 중입니다. 현재까지 누적된 구간을 5초 기준으로 정리할까요?")) {
+    return;
+  }
+
+  els.compactTimelineBtn.disabled = true;
+  if (els.compactTimelineStatus) els.compactTimelineStatus.textContent = "구간 정리 중...";
+  try {
+    const result = await api("/api/pipeline/detect/timeline/compact", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_gap_sec: 5 }),
+    });
+    const timeline = result.timeline || {};
+    await loadTimeline({ reset: true });
+    const before = timeline.before_segment_count ?? 0;
+    const after = timeline.segment_count ?? 0;
+    const merged = timeline.merged_segment_count ?? Math.max(0, before - after);
+    if (els.compactTimelineStatus) {
+      els.compactTimelineStatus.textContent = `정리 완료 · ${before}개 -> ${after}개 · ${merged}개 병합`;
+    }
+  } catch (err) {
+    if (els.compactTimelineStatus) els.compactTimelineStatus.textContent = err.message;
+  } finally {
+    els.compactTimelineBtn.disabled = false;
+  }
+}
+
+function savedResultLabel(item) {
+  const name = item.name || item.id;
+  const savedAt = item.saved_at ? item.saved_at.slice(0, 19).replace("T", " ") : "";
+  const segments = item.segment_count ?? 0;
+  const videos = item.video_count ?? 0;
+  const suffix = savedAt ? ` · ${savedAt}` : "";
+  return `${name} · ${segments}구간 · ${videos}영상${suffix}`;
+}
+
+async function loadSavedResultsList() {
+  if (!els.savedResultSelect) return;
+  try {
+    const { results } = await api("/api/pipeline/detect/results");
+    els.savedResultSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = results?.length ? "저장 결과 선택" : "저장된 결과 없음";
+    els.savedResultSelect.appendChild(placeholder);
+    for (const item of results || []) {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = savedResultLabel(item);
+      els.savedResultSelect.appendChild(option);
+    }
+  } catch (err) {
+    if (els.savedResultStatus) els.savedResultStatus.textContent = err.message;
+  }
+}
+
+async function saveCurrentDetectionResults() {
+  if (!els.saveResultBtn) return;
+  const name = els.saveResultName?.value.trim() || "";
+  if (!name) {
+    if (els.savedResultStatus) els.savedResultStatus.textContent = "저장 이름을 입력하세요.";
+    els.saveResultName?.focus();
+    return;
+  }
+  els.saveResultBtn.disabled = true;
+  if (els.savedResultStatus) els.savedResultStatus.textContent = "저장 중...";
+  try {
+    const { result } = await api("/api/pipeline/detect/results", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (els.savedResultStatus) {
+      els.savedResultStatus.textContent = `저장 완료 · ${result.segment_count ?? 0}구간`;
+    }
+    if (els.saveResultName) els.saveResultName.value = "";
+    await loadSavedResultsList();
+    if (els.savedResultSelect) els.savedResultSelect.value = result.id;
+  } catch (err) {
+    if (els.savedResultStatus) els.savedResultStatus.textContent = err.message;
+  } finally {
+    els.saveResultBtn.disabled = false;
+  }
+}
+
+async function loadSelectedDetectionResults() {
+  const resultId = els.savedResultSelect?.value || "";
+  if (!resultId) {
+    if (els.savedResultStatus) els.savedResultStatus.textContent = "열 저장 결과를 선택하세요.";
+    return;
+  }
+  const selectedText = els.savedResultSelect.options[els.savedResultSelect.selectedIndex]?.textContent || resultId;
+  if (!confirm(`현재 탐지 결과를 선택한 저장 결과로 바꿉니다.\n\n${selectedText}\n\n계속할까요?`)) {
+    return;
+  }
+  if (els.loadResultBtn) els.loadResultBtn.disabled = true;
+  if (els.savedResultStatus) els.savedResultStatus.textContent = "불러오는 중...";
+  try {
+    const { result } = await api(`/api/pipeline/detect/results/${encodeURIComponent(resultId)}/load`, {
+      method: "POST",
+    });
+    detectFrameOffset = 0;
+    detectFrameTotal = 0;
+    detectFrameJobId = null;
+    activeDetectJobId = null;
+    handledDetectJobId = null;
+    endDetectSession();
+    await loadTimeline({ reset: true });
+    const { state } = await api("/api/pipeline/state");
+    lastPipelineState = state;
+    renderPipelineState(state);
+    if (els.savedResultStatus) {
+      els.savedResultStatus.textContent = `불러오기 완료 · ${result.name || result.id} · ${result.segment_count ?? 0}구간`;
+    }
+  } catch (err) {
+    if (els.savedResultStatus) els.savedResultStatus.textContent = err.message;
+  } finally {
+    if (els.loadResultBtn) els.loadResultBtn.disabled = false;
+  }
+}
+
 function renderReportLinks(files) {
   if (!els.reportLinks) return;
   const labels = { html: "HTML", csv: "CSV", json: "JSON" };
@@ -1682,6 +1827,9 @@ els.detectFrameMore.addEventListener("click", () => {
 });
 
 els.resetTimelineBtn?.addEventListener("click", resetTimeline);
+els.saveResultBtn?.addEventListener("click", saveCurrentDetectionResults);
+els.loadResultBtn?.addEventListener("click", loadSelectedDetectionResults);
+els.compactTimelineBtn?.addEventListener("click", compactTimeline);
 els.generateReportBtn?.addEventListener("click", generateDetectionReport);
 
 els.refreshModelsBtn?.addEventListener("click", () => {
@@ -2098,5 +2246,6 @@ api("/api/pipeline/state")
   })
   .catch(console.error);
 
+loadSavedResultsList();
 setDetectSourceMode("upload");
 loadLakeConfig();

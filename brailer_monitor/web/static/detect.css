@@ -44,7 +44,8 @@ body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); col
 label { display: grid; gap: 0.2rem; font-size: 0.8rem; color: var(--muted); }
 input[type="number"],
 input[type="text"],
-input[type="file"] {
+input[type="file"],
+select {
   background: #121820;
   color: #f1f5f9;
   border: 1px solid var(--border);
@@ -54,7 +55,8 @@ input[type="file"] {
   color-scheme: dark;
 }
 input[type="number"]:focus,
-input[type="text"]:focus {
+input[type="text"]:focus,
+select:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: var(--accent);
@@ -192,6 +194,12 @@ button.small { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
   margin: 0 0 0.75rem;
 }
 .report-actions button { margin-top: 0; }
+.report-actions input[type="text"] { width: min(18rem, 100%); margin: 0; }
+.saved-result-select {
+  min-width: 18rem;
+  max-width: 28rem;
+  margin: 0;
+}
 .report-links { display: inline-flex; gap: 0.45rem; flex-wrap: wrap; }
 .report-links a {
   color: var(--accent);

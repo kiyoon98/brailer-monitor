@@ -64,6 +64,14 @@ class LakeRangeRequest(BaseModel):
     check_exists: bool = True
 
 
+class TimelineCompactRequest(BaseModel):
+    max_gap_sec: float = Field(default=5.0, ge=0.0, le=60.0)
+
+
+class SaveDetectionResultsRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
 class LabelRequest(BaseModel):
     polygon_norm: list[list[float]]
     class_id: int = 0
@@ -428,6 +436,44 @@ async def pipeline_detect_timeline_segment(segment_id: str) -> dict:
 @app.post("/api/pipeline/detect/timeline/reset")
 async def pipeline_detect_timeline_reset() -> dict:
     return {"timeline": pipeline.reset_timeline()}
+
+
+@app.post("/api/pipeline/detect/timeline/compact")
+async def pipeline_detect_timeline_compact(body: TimelineCompactRequest | None = None) -> dict:
+    gap = body.max_gap_sec if body is not None else 5.0
+    try:
+        return {"timeline": pipeline.compact_timeline(max_gap_sec=gap)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/pipeline/detect/results")
+async def pipeline_detect_saved_results() -> dict:
+    return {"results": pipeline.list_saved_results()}
+
+
+@app.post("/api/pipeline/detect/results")
+async def pipeline_detect_save_results(body: SaveDetectionResultsRequest) -> dict:
+    try:
+        return {"result": pipeline.save_current_results(body.name)}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/pipeline/detect/results/{result_id}/load")
+async def pipeline_detect_load_results(result_id: str) -> dict:
+    try:
+        return {"result": pipeline.load_saved_results(result_id), "timeline": pipeline.get_timeline(offset=0, limit=1)}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _generate_detection_report() -> dict:

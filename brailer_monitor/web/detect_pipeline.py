@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +19,7 @@ from typing import Any
 
 from ..cvat_import import import_cvat
 from ..detect_timeline import (
+    compact_timeline_segments,
     get_segment_frames,
     list_timeline,
     merge_job_manifest,
@@ -30,10 +33,27 @@ from ..video_detect import DetectionCancelled
 from ..video_time import parse_video_start_time
 
 logger = logging.getLogger(__name__)
+SAVE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_saved_result_id(name: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "-", name.strip().lower()).strip(".-")
+    if not base:
+        base = "result"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"{stamp}-{base[:40]}"
+
+
+def _copy_or_link(src: str, dst: str) -> str:
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+    return dst
 
 
 @dataclass
@@ -110,6 +130,8 @@ class DetectPipelineManager:
         self._batch_failed = 0
         self._detect_cancel = threading.Event()
         self._train_cancel = threading.Event()
+        self._saved_results_dir = self.root / "saved_results"
+        self._restore_backups_dir = self.root / "restore_backups"
 
     def _detection_cancelled(self) -> bool:
         return self._detect_cancel.is_set()
@@ -410,6 +432,152 @@ class DetectPipelineManager:
         state.detect_timeline_events = 0
         self._save_state(state)
         return timeline_summary(self._timeline_path)
+
+    def compact_timeline(self, *, max_gap_sec: float = 5.0) -> dict[str, Any]:
+        result = compact_timeline_segments(self._timeline_path, max_gap_sec=max_gap_sec)
+        state = self._load_state()
+        state.detect_timeline_events = result["segment_count"]
+        self._save_state(state)
+        return result
+
+    def _detect_jobs_dir(self) -> Path:
+        return self.root / "detect_jobs"
+
+    def _saved_result_dir(self, result_id: str) -> Path:
+        if not SAVE_ID_RE.match(result_id) or result_id in {".", ".."}:
+            raise ValueError("Invalid saved result id")
+        return self._saved_results_dir / result_id
+
+    def _timeline_job_ids(self, timeline: dict[str, Any]) -> list[str]:
+        job_ids: set[str] = set()
+        for video in timeline.get("videos", []) or []:
+            if video.get("job_id"):
+                job_ids.add(str(video["job_id"]))
+        for event in timeline.get("events", []) or []:
+            if event.get("job_id"):
+                job_ids.add(str(event["job_id"]))
+        return sorted(job_ids)
+
+    def list_saved_results(self) -> list[dict[str, Any]]:
+        if not self._saved_results_dir.exists():
+            return []
+        results: list[dict[str, Any]] = []
+        for directory in sorted(self._saved_results_dir.iterdir(), reverse=True):
+            meta_path = directory / "metadata.json"
+            if not meta_path.exists():
+                continue
+            try:
+                metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            metadata["id"] = directory.name
+            results.append(metadata)
+        return results
+
+    def save_current_results(self, name: str) -> dict[str, Any]:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("저장 이름을 입력하세요.")
+        with self._lock:
+            state = self._load_state()
+            if _detect_is_active(state, threads=self._detect_threads):
+                raise RuntimeError("탐지가 진행 중입니다. 완료 후 저장하세요.")
+            if not self._timeline_path.exists():
+                raise FileNotFoundError("저장할 탐지 타임라인이 없습니다.")
+
+            timeline = json.loads(self._timeline_path.read_text(encoding="utf-8"))
+            summary = timeline_summary(self._timeline_path)
+            result_id = _safe_saved_result_id(clean_name)
+            result_dir = self._saved_result_dir(result_id)
+            if result_dir.exists():
+                result_id = f"{result_id}-{uuid.uuid4().hex[:6]}"
+                result_dir = self._saved_result_dir(result_id)
+            jobs_dir = result_dir / "detect_jobs"
+            result_dir.mkdir(parents=True, exist_ok=False)
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+
+            job_ids = self._timeline_job_ids(timeline)
+            copied_job_ids: list[str] = []
+            try:
+                shutil.copy2(self._timeline_path, result_dir / "detect_timeline.json")
+                for job_id in job_ids:
+                    src = self._job_dir(job_id)
+                    if not src.exists():
+                        continue
+                    shutil.copytree(src, jobs_dir / job_id, copy_function=_copy_or_link)
+                    copied_job_ids.append(job_id)
+                metadata = {
+                    "id": result_id,
+                    "name": clean_name,
+                    "saved_at": _now_iso(),
+                    "segment_count": summary["segment_count"],
+                    "event_count": summary["event_count"],
+                    "video_count": summary["video_count"],
+                    "job_count": len(copied_job_ids),
+                    "job_ids": copied_job_ids,
+                }
+                (result_dir / "metadata.json").write_text(
+                    json.dumps(metadata, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                shutil.rmtree(result_dir, ignore_errors=True)
+                raise
+            return metadata
+
+    def load_saved_results(self, result_id: str) -> dict[str, Any]:
+        with self._lock:
+            state = self._load_state()
+            if _detect_is_active(state, threads=self._detect_threads):
+                raise RuntimeError("탐지가 진행 중입니다. 완료 후 불러오세요.")
+
+            result_dir = self._saved_result_dir(result_id)
+            timeline_src = result_dir / "detect_timeline.json"
+            jobs_src = result_dir / "detect_jobs"
+            meta_path = result_dir / "metadata.json"
+            if not timeline_src.exists() or not meta_path.exists():
+                raise FileNotFoundError("저장된 탐지 결과를 찾지 못했습니다.")
+
+            backup_dir = self._restore_backups_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            current_jobs = self._detect_jobs_dir()
+            if self._timeline_path.exists():
+                shutil.move(str(self._timeline_path), str(backup_dir / "detect_timeline.json"))
+            if current_jobs.exists():
+                shutil.move(str(current_jobs), str(backup_dir / "detect_jobs"))
+
+            try:
+                shutil.copy2(timeline_src, self._timeline_path)
+                if jobs_src.exists():
+                    shutil.copytree(jobs_src, current_jobs, copy_function=_copy_or_link)
+                else:
+                    current_jobs.mkdir(parents=True, exist_ok=True)
+                summary = timeline_summary(self._timeline_path)
+                state.detect_timeline_events = summary["segment_count"]
+                state.detect_status = "completed" if summary["segment_count"] else "idle"
+                state.detect_error = None
+                state.detect_job_id = None
+                state.detect_queue_pending = 0
+                self._save_state(state)
+            except Exception:
+                if self._timeline_path.exists():
+                    self._timeline_path.unlink()
+                if current_jobs.exists():
+                    shutil.rmtree(current_jobs)
+                if (backup_dir / "detect_timeline.json").exists():
+                    shutil.move(str(backup_dir / "detect_timeline.json"), str(self._timeline_path))
+                if (backup_dir / "detect_jobs").exists():
+                    shutil.move(str(backup_dir / "detect_jobs"), str(current_jobs))
+                raise
+
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            metadata["id"] = result_dir.name
+            metadata["loaded"] = True
+            metadata["backup_id"] = backup_dir.name
+            metadata["segment_count"] = summary["segment_count"]
+            metadata["event_count"] = summary["event_count"]
+            metadata["video_count"] = summary["video_count"]
+            return metadata
 
     def import_cvat(
         self,

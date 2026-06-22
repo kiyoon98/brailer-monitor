@@ -132,6 +132,13 @@
       <h2>탐지 타임라인 <span id="frameCount" class="badge">0</span></h2>
       <p class="timeline-legend hint">백분율 = YOLO 신뢰도 · 면적 = 탐지 픽셀 수 · 썸네일 클릭: 확대 · 더블클릭: 세그먼트 전체</p>
       <div class="report-actions">
+        <input id="saveResultName" type="text" placeholder="탐지 결과 이름" />
+        <button id="saveResultBtn" type="button" class="secondary">현재 결과 저장</button>
+        <select id="savedResultSelect" class="saved-result-select"></select>
+        <button id="loadResultBtn" type="button" class="secondary">저장 결과 열기</button>
+        <span id="savedResultStatus" class="hint"></span>
+        <button id="compactTimelineBtn" type="button" class="secondary">5초 이내 구간 합치기</button>
+        <span id="compactTimelineStatus" class="hint"></span>
         <button id="generateReportBtn" type="button" class="secondary">외부 문서 생성</button>
         <span id="reportStatus" class="hint"></span>
         <div id="reportLinks" class="report-links"></div>
@@ -188,6 +195,6 @@
     </div>
   </div>
 
-  <script src="/static/detect.js?v=41"></script>
+  <script src="/static/detect.js?v=44"></script>
 </body>
 </html>
