@@ -77,6 +77,8 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(row.avg_mask_width_px, 10.5)
             self.assertEqual(row.max_mask_width_px, 11)
             self.assertEqual(row.avg_mask_height_px, 10.0)
+            self.assertEqual(row.preview_url, "/api/pipeline/detect/job1/previews/frame_000015.jpg")
+            self.assertEqual(row.video_url, "/api/pipeline/detect/job1/video")
 
     def test_write_report_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,6 +113,9 @@ class DetectReportTests(unittest.TestCase):
             json_path = root / "reports" / files["json"]
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["segment_count"], 1)
+            self.assertEqual(result["output_dir"], str((root / "reports").resolve()))
+            html_text = (root / "reports" / files["html"]).read_text(encoding="utf-8")
+            self.assertIn("/api/pipeline/detect/job1/video", html_text)
 
 
 if __name__ == "__main__":

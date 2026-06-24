@@ -1,31 +1,64 @@
 {
-  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/lake_win_stream04_260310_2020.zip",
-  "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/JJR-102283_stream04_260310_202016.mp4",
+  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/lake_win_stream04_260308_0940.zip",
+  "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/JJR-102283_stream04_260308_094016.mp4",
   "frame_source": "video",
   "task_type": "segment",
   "class_names": [
-    "win"
+    "win_tunas",
+    "aurora_brailer",
+    "aurora_tunas",
+    "dream_tunas"
   ],
   "label_summary": {
     "class_names": [
-      "win"
+      "win_tunas",
+      "aurora_brailer",
+      "aurora_tunas",
+      "dream_tunas"
     ],
     "objects": [
       {
-        "name": "win",
+        "name": "win_tunas",
         "color": "#7c6453",
         "cvat_type": "any",
-        "annotation_count": 97,
+        "annotation_count": 127,
         "box_count": 0,
-        "polygon_count": 97,
-        "frame_count": 97
+        "polygon_count": 127,
+        "frame_count": 127
+      },
+      {
+        "name": "aurora_brailer",
+        "color": "#82286e",
+        "cvat_type": "polygon",
+        "annotation_count": 0,
+        "box_count": 0,
+        "polygon_count": 0,
+        "frame_count": 0
+      },
+      {
+        "name": "aurora_tunas",
+        "color": "#33ddff",
+        "cvat_type": "polygon",
+        "annotation_count": 0,
+        "box_count": 0,
+        "polygon_count": 0,
+        "frame_count": 0
+      },
+      {
+        "name": "dream_tunas",
+        "color": "#fafa37",
+        "cvat_type": "polygon",
+        "annotation_count": 0,
+        "box_count": 0,
+        "polygon_count": 0,
+        "frame_count": 0
       }
     ],
-    "total_annotations": 97,
-    "annotated_frames": 97,
+    "total_annotations": 127,
+    "annotated_frames": 127,
     "task_type": "segment"
   },
-  "train_images": 78,
-  "val_images": 19,
-  "total_annotations": 97
+  "train_images": 102,
+  "val_images": 25,
+  "total_annotations": 127
 }

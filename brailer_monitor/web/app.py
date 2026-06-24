@@ -506,6 +506,12 @@ async def pipeline_detect_report_file(filename: str) -> FileResponse:
         ".csv": "text/csv; charset=utf-8",
         ".json": "application/json",
     }[path.suffix.lower()]
+    if path.suffix.lower() == ".html":
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+        )
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
@@ -539,10 +545,25 @@ async def pipeline_detect_results(
 
 @app.get("/api/pipeline/detect/{job_id}/previews/{filename}")
 async def pipeline_detect_preview(job_id: str, filename: str) -> FileResponse:
+    if Path(filename).name != filename:
+        raise HTTPException(status_code=400, detail="Invalid preview filename")
     path = pipeline._job_dir(job_id) / "previews" / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Preview not found")
     return FileResponse(path)
+
+
+@app.get("/api/pipeline/detect/{job_id}/video")
+async def pipeline_detect_video(job_id: str) -> FileResponse:
+    try:
+        path = pipeline.get_detection_video_path(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+    )
 
 
 @app.get("/api/jobs")

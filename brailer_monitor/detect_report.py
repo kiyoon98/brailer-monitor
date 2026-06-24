@@ -45,6 +45,8 @@ class DetectionSegmentReportRow:
     video_name: str
     job_id: str
     preview_path: str | None
+    preview_url: str | None
+    video_url: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,6 +100,8 @@ REPORT_FIELDS = [
     "video_name",
     "job_id",
     "preview_path",
+    "preview_url",
+    "video_url",
 ]
 
 
@@ -165,6 +169,14 @@ def build_detection_report(timeline_path: Path) -> DetectionReport:
         mask_areas = _positive_numbers(group, "mask_area_px", fallback_key="area_px")
         mask_widths = _positive_numbers(group, "mask_width_px")
         mask_heights = _positive_numbers(group, "mask_height_px")
+        job_id = str(best.get("job_id") or "")
+        preview_path = best.get("preview_path")
+        preview_url = (
+            f"/api/pipeline/detect/{job_id}/previews/{preview_path}"
+            if job_id and preview_path
+            else None
+        )
+        video_url = f"/api/pipeline/detect/{job_id}/video" if job_id else None
 
         rows.append(
             DetectionSegmentReportRow(
@@ -195,8 +207,10 @@ def build_detection_report(timeline_path: Path) -> DetectionReport:
                 avg_mask_height_px=_avg(mask_heights),
                 max_mask_height_px=int(max(mask_heights, default=0)),
                 video_name=video_name,
-                job_id=str(best.get("job_id") or ""),
-                preview_path=best.get("preview_path"),
+                job_id=job_id,
+                preview_path=preview_path,
+                preview_url=preview_url,
+                video_url=video_url,
             )
         )
 
@@ -241,6 +255,13 @@ def _segment_mask_stats_label(row: DetectionSegmentReportRow) -> str:
     )
 
 
+def _link_or_text(label: str, href: str | None) -> str:
+    escaped_label = html.escape(label or "-")
+    if not href:
+        return escaped_label
+    return f'<a href="{html.escape(href)}" target="_blank" rel="noreferrer">{escaped_label}</a>'
+
+
 def _render_table_rows(rows: list[DetectionSegmentReportRow]) -> str:
     rendered = []
     for row in rows:
@@ -252,11 +273,11 @@ def _render_table_rows(rows: list[DetectionSegmentReportRow]) -> str:
             f"<td>{row.frame_count}</td>"
             f"<td>{html.escape(row.class_name)}</td>"
             f"<td>{row.best_match_pct:.2f}%</td>"
-            f"<td>{html.escape(row.best_time)}</td>"
+            f"<td>{_link_or_text(row.best_time, row.preview_url)}</td>"
             f"<td>{html.escape(_bbox_label(row))}</td>"
             f"<td>{html.escape(_mask_label(row))}</td>"
             f"<td>{_segment_mask_stats_label(row)}</td>"
-            f"<td>{html.escape(row.video_name)}</td>"
+            f"<td>{_link_or_text(row.video_name, row.video_url)}</td>"
             "</tr>"
         )
     return "\n".join(rendered)
@@ -281,6 +302,8 @@ def render_detection_report_html(report: DetectionReport) -> str:
     table {{ width: 100%; border-collapse: collapse; margin: 14px 0 28px; font-size: 13px; }}
     th, td {{ border: 1px solid #d1d5db; padding: 7px 8px; text-align: left; vertical-align: top; }}
     th {{ background: #f3f4f6; }}
+    a {{ color: #2563eb; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
     code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
   </style>
 </head>
@@ -295,6 +318,7 @@ def render_detection_report_html(report: DetectionReport) -> str:
   </div>
   <p>클래스별 구간 수: {class_counts or "-"}</p>
   <p>평균 연속 시간: {report.duration_avg_sec:.3f}s · 최소: {report.duration_min_sec:.3f}s · 최대: {report.duration_max_sec:.3f}s</p>
+  <p class="muted">대표 프레임 링크는 bbox와 mask가 표시된 preview 이미지를 엽니다. 영상 링크는 해당 탐지 job의 원본 영상을 엽니다.</p>
 
   <h2>연속 시간이 긴 대표 구간</h2>
   <table>
@@ -337,6 +361,7 @@ def write_detection_report_bundle(timeline_path: Path, output_dir: Path) -> dict
 
     return {
         "report": report.to_dict(),
+        "output_dir": str(output_dir.resolve()),
         "files": {
             "html": html_path.name,
             "csv": csv_path.name,

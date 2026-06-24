@@ -1316,3 +1316,13 @@ class DetectPipelineManager:
         payload["offset"] = offset
         payload["limit"] = limit
         return payload
+
+    def get_detection_video_path(self, job_id: str) -> Path:
+        manifest = self.get_detection_manifest(job_id)
+        video = manifest.get("video")
+        if not video:
+            raise FileNotFoundError("Detection video path not found")
+        path = Path(str(video))
+        if not path.exists():
+            raise FileNotFoundError("Detection video not found")
+        return path

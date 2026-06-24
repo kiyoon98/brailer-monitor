@@ -4,6 +4,9 @@ train: images/train
 val: images/val
 
 names:
-  0: win
+  0: win_tunas
+  1: aurora_brailer
+  2: aurora_tunas
+  3: dream_tunas
 
-# task: segment, train: 78, val: 19
+# task: segment, train: 102, val: 25
