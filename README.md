@@ -1,152 +1,243 @@
 # Brailer Monitor
 
-녹화 EM 영상에서 **브레일러(참치 운반망)** 를 자동 탐지하고, 어획량을 두 가지 방식으로 추정하는 프로그램입니다.
+CVAT으로 라벨링한 브레일러/윈치 영상 데이터를 YOLO 학습 데이터셋으로 가져오고, 학습된 모델로 녹화 영상이나 실시간 HLS 스트림에서 객체를 탐지하는 웹 기반 파이프라인입니다.
 
-- **A. 기하학적**: 세그멘테이션 마스크 + 충만도 → 부피 → kg
-- **B. 이벤트 기반**: 이송 완료 1회 × 표준 용량(kg)
+현재 기본 화면은 `http://localhost:8080`의 **YOLO 학습 → 비디오 탐지 → 탐지 타임라인 → CVAT Import** 흐름입니다.
+
+## 주요 기능
+
+- CVAT 1.1 `.zip` 또는 `annotations.xml` import
+- CVAT export에 이미지가 없는 경우 원본 영상에서 annotation 프레임 추출
+- YOLO detect/segment 데이터셋 자동 구성 및 `config/dataset.yaml` 생성
+- YOLO 학습, 중지, 진행률 표시
+- 학습 완료 모델 자동 저장 및 모델 라이브러리 관리
+- 모델별 학습 프레임 미리보기
+- 파일 업로드, Lake 저장소 구간, 실시간 HLS 스트림 탐지
+- 실시간 스트림 기본 주소: `http://127.0.0.1:8081/live_04.m3u8`
+- 스트림 탐지 중 최신 탐지 프레임 오버레이 표시
+- HLS 리셋/끊김 시 브라우저 재연결 및 worker 스트림 재연결
+- 탐지 타임라인 실시간 갱신
+- 탐지 구간 10초 이내 병합
+- 탐지 결과 저장/불러오기
+- 외부 문서용 탐지 리포트 생성
+- segmentation 후처리 오류 발생 시 bbox detect fallback
 
 ## 요구 사항
 
-- Python 3.11+
-- Jetson Thor: 시스템 OpenCV, TensorRT (JetPack)
-- 그 외: `pip install -r requirements.txt`
+- Python 3.11 이상
+- OpenCV
+- Ultralytics YOLO
+- FastAPI / Uvicorn
+- GPU 사용 시 CUDA 또는 Jetson 환경 권장
+
+설치:
 
 ```bash
 cd ~/Documents/brailer-monitor
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install -e .
-```
-
-## 빠른 시작
-
-```bash
-# 단위 테스트
-python -m unittest discover -s tests
-
-# 1) 브레일러 구간 탐지 + 프레임 추출
-python -m brailer_monitor extract-frames data/raw/JJR-102283_stream04_260310_202016.mp4 \
-  --out data/dataset/staging/images \
-  --manifest data/dataset/segments.json \
-  --preview data/dataset/staging/preview
-
-# 2) SAM 자동 라벨링 (YOLO-seg polygon) + train/val 분할
-python -m brailer_monitor label --split
-
-# 또는 한 번에 (extract + label)
-python scripts/label_brailer.py --video data/raw/JJR-102283_stream04_260310_202016.mp4
-
-# 샘플 이벤트 집계
-python -m brailer_monitor summarize examples/sample_events.json --out output/summary.json
-
-# 영상 분석 (학습된 모델 사용)
-python -m brailer_monitor analyze data/raw/JJR-102283_stream04_260310_202016.mp4 \
-  --calibration config/calibration.json \
-  --capacity config/standard_capacity.json \
-  --model models/brailer_seg.engine \
-  --out output/events.json \
-  --csv output/events.csv
-```
-
-## 라벨링 (자동)
-
-제공된 5분 EM 영상에서 SAM 기반 `brailer_loaded` 라벨을 생성합니다:
-
-```bash
-# 영상 다운로드 (이미 data/raw/ 에 있으면 생략)
-curl -L -o data/raw/JJR-102283_stream04_260310_202016.mp4 \
-  "http://10.2.10.158:8041/media/lake_win/2026_decrypted/03/10/20/JJR-102283_stream04_260310_202016.mp4"
-
-# 1초 간격 프레임 추출 + SAM polygon 라벨링
-python scripts/label_brailer.py --frame-stride 15 --sam-model models/mobile_sam.pt
-```
-
-결과:
-- `data/dataset/images/train` (206장), `images/val` (51장)
-- `data/dataset/labels/train|val` — YOLO segmentation polygon 형식
-- `data/dataset/label_manifest.json` — 프레임별 메타데이터
-- `data/dataset/staging/preview/` — 라벨 검수용 오버레이 이미지
-
-## 모델 학습
-
-1. (완료) 위 자동 라벨링으로 `data/dataset/` 구성
-2. 또는 CVAT/Roboflow로 수동 보정 후 동일 경로에 반영
-3. 학습:
-
-```bash
-python -m brailer_monitor train --dataset config/dataset.yaml --epochs 100
-```
-
-4. TensorRT 변환 (Jetson):
-
-```bash
-chmod +x scripts/export_tensorrt.sh
-./scripts/export_tensorrt.sh models/brailer_seg.pt
-```
-
-## 설정
-
-| 파일 | 내용 |
-|------|------|
-| `config/calibration.json` | `cm_per_pixel`, 이송 구역 polygon, 하역 라인 |
-| `config/standard_capacity.json` | 브레일러 1회 표준 용량(kg), 신뢰도 가중치 |
-| `config/dataset.yaml` | YOLO 학습 데이터셋 경로 |
-
-## CLI
-
-| 명령 | 설명 |
-|------|------|
-| `extract-frames` | 브레일러 구간 탐지 → 해당 구간만 프레임 추출 |
-| `label` | 추출된 프레임에 SAM polygon 라벨 생성 |
-| `analyze` | 영상 → 브레일러 이벤트 JSON/CSV |
-| `summarize` | 이벤트 → 항차/영상별 어획량 집계 |
-| `train` | YOLO11-seg 커스텀 학습 |
-| `export` | `.pt` → TensorRT `.engine` |
-| `web` | 웹 뷰어 실행 (업로드 · 레이블 검수) |
-
-## 웹 어노테이터 (수동 polygon 레이블)
-
-자동 SAM 라벨은 부정확하므로, **사용자가 직접 다각형을 그려** `brailer_loaded` 레이블을 입력합니다.
-
-```bash
 pip install -e ".[web,opencv]"
+```
+
+Node.js는 개발 중 JS 문법 검사용으로만 필요합니다.
+
+```bash
+node --check brailer_monitor/web/static/detect.js
+```
+
+## 웹 실행
+
+```bash
+source .venv/bin/activate
 python -m brailer_monitor web --port 8080
 ```
 
-브라우저 http://localhost:8080:
+브라우저:
 
-1. **기본 영상 열기** 또는 영상 업로드
-2. 시간(초) 입력 후 **프레임 가져오기** — 북마크 35s, 207s 제공
-3. 캔버스 클릭으로 브레일러 외곽 polygon 점 추가
-4. **레이블 저장** (Ctrl+S) — YOLO-seg 형식으로 저장
-5. **학습용 dataset으로보내기** — `data/dataset/images/train`에 복사
+```text
+http://localhost:8080
+```
 
-잘못된 자동 라벨 삭제:
+현재 서버가 백그라운드에서 떠 있는지 확인:
 
 ```bash
-python scripts/clear_auto_labels.py
+ps -eo pid,ppid,pgid,sid,stat,etime,args | rg 'brailer_monitor web --port 8080'
 ```
 
-## 프로젝트 구조
+8080 포트 서버를 재시작해야 할 때:
 
-```
-brailer_monitor/
-  frame_extractor.py   # 브레일러 구간 탐지 + 프레임 추출
-  labeling.py          # SAM 자동 라벨링
-  detector.py          # YOLO + TensorRT
-  tracker.py           # ByteTrack 상태 관리
-  transfer_counter.py  # B 방식 (supervision zone)
-  volume_estimator.py  # A 방식 (부피·충만도)
-  pipeline.py          # 영상 분석 파이프라인
-  events.py            # BrailerEvent 모델
-  aggregation.py       # 집계
-  cli.py               # CLI
+```bash
+kill -TERM -<PGID>
+setsid -f .venv/bin/python -m brailer_monitor web --port 8080 \
+  > /tmp/brailer-monitor-web-8080.log 2>&1
 ```
 
-## 라이브러리
+## 기본 사용 흐름
 
-- **OpenCV** — 영상 I/O, 보정, 충만도 추정
-- **Ultralytics YOLO11** — 탐지·세그멘테이션·추적·TensorRT export
-- **supervision** — 이송 구역/라인 crossing
-- **NumPy / SciPy** — 기하 계산
+### 1. CVAT 데이터 Import
+
+화면 하단의 **CVAT 데이터 Import** 섹션에서 CVAT export 파일을 올립니다.
+
+- `annotations.xml`
+- CVAT 1.1 `.zip`
+- export 안에 이미지가 없으면 원본 영상도 함께 업로드
+
+Import가 끝나면:
+
+- `data/dataset/images/train`
+- `data/dataset/images/val`
+- `data/dataset/labels/train`
+- `data/dataset/labels/val`
+- `data/dataset/import_meta.json`
+- `config/dataset.yaml`
+
+이 갱신됩니다.
+
+CLI로도 import할 수 있습니다.
+
+```bash
+python -m brailer_monitor import-cvat data/dataset/annotations.xml \
+  --video data/raw/source.mp4 \
+  --dataset-root data/dataset
+```
+
+### 2. YOLO 학습
+
+웹의 **YOLO 학습** 섹션에서 `Epochs`, `Batch`, `학습 크기(imgsz)`를 지정하고 학습을 시작합니다.
+
+학습 완료 모델은 `models/library/` 아래에 자동 저장되며, 목록에서 사용할 모델을 선택할 수 있습니다. 모델을 클릭하면 해당 모델 저장 시점의 학습 프레임을 확인할 수 있습니다.
+
+CLI 학습:
+
+```bash
+python -m brailer_monitor train \
+  --dataset config/dataset.yaml \
+  --epochs 50 \
+  --batch 4 \
+  --imgsz 416
+```
+
+### 3. 비디오 탐지
+
+웹의 **비디오 탐지** 섹션에서 소스를 선택합니다.
+
+- 파일 업로드: 여러 영상 선택 가능
+- Lake 저장소: 날짜/시간 구간으로 원격 영상 탐색 후 배치 탐지
+- 실시간 스트림: HLS 주소를 입력해 현재 스트림 탐지
+
+공통 옵션:
+
+- `프레임 간격`: 몇 프레임마다 추론할지 지정
+- `Confidence`: 탐지 confidence threshold
+- `추론 크기`: YOLO `imgsz`
+- `정밀 마스크(SAM)`: bbox 기반 추가 SAM mask 생성
+
+실시간 스트림:
+
+- 기본 주소는 `http://127.0.0.1:8081/live_04.m3u8`
+- 스트림 preview 위에 최신 탐지 프레임이 오버레이됩니다.
+- HLS playlist/segment가 리셋되면 preview는 자동 재연결을 시도합니다.
+- worker는 OpenCV read 실패가 지속되면 `VideoCapture`를 다시 열어 탐지를 계속합니다.
+
+CLI로 단일 영상 탐지:
+
+```bash
+python -m brailer_monitor detect-video data/raw/video.mp4 \
+  --model models/library/<model-id>/weights.pt \
+  --out output/detect \
+  --frame-stride 5 \
+  --confidence 0.6 \
+  --segmentation auto
+```
+
+탐지 결과는 job별로 `data/pipeline/detect_jobs/<job_id>/`에 저장됩니다.
+
+- `detections.json`
+- `previews/frame_*.jpg`
+- `events.jsonl`
+- `progress.json`
+- `worker.log`
+
+### 4. 탐지 타임라인
+
+탐지 중 객체가 발견될 때마다 타임라인이 실시간 갱신됩니다.
+
+타임라인 기능:
+
+- 탐지 구간 목록
+- 시간축 표시/확대/축소
+- 썸네일 클릭 확대
+- 더블클릭으로 세그먼트 프레임 전체 보기
+- 10초 이내 구간 병합
+- 현재 탐지 결과 저장
+- 저장된 결과 불러오기
+- 외부 문서용 리포트 생성
+
+타임라인 데이터는 `data/pipeline/detect_timeline.json`에 저장됩니다.
+
+## 모델과 segmentation fallback
+
+데이터셋이 polygon 기반이면 segment 모델을 학습하고, box 기반이면 detect 모델을 학습합니다. 탐지 시에는 import metadata와 모델명을 기준으로 segmentation 여부를 자동 판단합니다.
+
+일부 모델/프레임 조합에서 Ultralytics segmentation 후처리가 다음 오류를 낼 수 있습니다.
+
+```text
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (300x0 and 32x6656)
+```
+
+이 경우 현재 detector는 mask 후처리를 우회하고 bbox detect fallback을 사용합니다. fallback에서는 segmentation mask/polygon 대신 bbox 결과만 사용됩니다.
+
+## CLI 명령
+
+| 명령 | 설명 |
+|------|------|
+| `web` | 웹 파이프라인 실행 |
+| `import-cvat` | CVAT 1.1 export를 YOLO 데이터셋으로 변환 |
+| `train` | `config/dataset.yaml` 기준 YOLO 학습 |
+| `detect-video` | 단일 영상 탐지 및 manifest 생성 |
+| `extract-frames` | 브레일러 구간 탐지 후 프레임 추출 |
+| `label` | 추출 프레임에 SAM polygon 라벨 생성 |
+| `oneshot` | 참조 라벨 기반 one-shot 탐지 |
+| `analyze` | 이벤트 기반 영상 분석 |
+| `summarize` | 이벤트 JSON 집계 |
+| `export` | `.pt` 모델을 TensorRT `.engine`으로 변환 |
+
+설치 후 console script도 사용할 수 있습니다.
+
+```bash
+brailer-monitor web --port 8080
+```
+
+## 주요 경로
+
+| 경로 | 내용 |
+|------|------|
+| `brailer_monitor/web/static/detect.html` | 메인 웹 UI |
+| `brailer_monitor/web/static/detect.js` | 웹 UI 로직 |
+| `brailer_monitor/web/app.py` | FastAPI endpoint |
+| `brailer_monitor/web/detect_pipeline.py` | import/train/detect job 관리 |
+| `brailer_monitor/video_detect.py` | 영상/스트림 YOLO 추론 |
+| `brailer_monitor/detector.py` | YOLO wrapper 및 fallback |
+| `brailer_monitor/detect_timeline.py` | 누적 탐지 타임라인 |
+| `brailer_monitor/model_library.py` | 학습 모델 저장/관리 |
+| `data/dataset/` | YOLO 학습 데이터셋 |
+| `data/pipeline/` | 웹 pipeline 상태, 탐지 job, 저장 결과, 리포트 |
+| `models/library/` | 학습 완료 모델 라이브러리 |
+| `config/dataset.yaml` | YOLO 학습 데이터셋 설정 |
+
+## 테스트
+
+```bash
+source .venv/bin/activate
+python -m unittest discover -s tests
+node --check brailer_monitor/web/static/detect.js
+```
+
+## 개발 메모
+
+- `detect_worker.py`는 탐지를 별도 subprocess에서 실행합니다. CUDA 오류가 발생해도 웹 서버 프로세스가 같이 망가지지 않도록 분리되어 있습니다.
+- 실시간 스트림 중지 요청은 job 디렉터리의 `stop.txt`로 전달됩니다.
+- 탐지 진행률은 `progress.json`, 실시간 타임라인 이벤트는 `events.jsonl`로 parent process에 전달됩니다.
+- 완료 시 `detections.json`을 최종 병합하며, 같은 job의 임시 타임라인 이벤트는 중복되지 않도록 교체됩니다.
+- 타임라인 구간 병합 기본값은 10초입니다.
