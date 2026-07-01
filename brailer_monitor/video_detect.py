@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -167,6 +168,7 @@ def _detection_to_dict(
     *,
     sam_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
+    mask = sam_mask if sam_mask is not None else det.mask
     out = {
         "class_id": det.class_id,
         "class_name": det.class_name,
@@ -174,10 +176,10 @@ def _detection_to_dict(
         "bbox_xyxy": [round(v, 1) for v in det.bbox_xyxy],
         "track_id": det.track_id,
         "area_px": _bbox_area_px(det),
-        "segmentation_source": "sam2" if sam_mask is not None else "bbox",
+        "segmentation_source": "sam2" if sam_mask is not None else "yolo" if det.mask is not None else "bbox",
     }
-    if sam_mask is not None:
-        stats = _mask_stats(sam_mask, frame_w, frame_h, det.bbox_xyxy)
+    if mask is not None:
+        stats = _mask_stats(mask, frame_w, frame_h, det.bbox_xyxy)
         out.update(stats)
         out["area_px"] = stats["mask_area_px"]
     return out
@@ -191,10 +193,13 @@ def detect_video(
     frame_stride: int = 1,
     confidence: float = 0.35,
     device: str | int = 0,
+    imgsz: int = 416,
     use_segmentation: bool | None = None,
+    use_sam: bool = False,
     max_frames: int | None = None,
     save_previews: bool = True,
     on_progress: Callable[[int, int, int], None] | None = None,
+    on_detection: Callable[[dict[str, Any]], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Detect objects in each sampled frame; save manifest + preview images."""
@@ -238,8 +243,9 @@ def detect_video(
         confidence_threshold=confidence,
         device=device,
         use_segmentation=use_segmentation,
+        imgsz=imgsz,
     )
-    sam_segmenter = SamBoxSegmenter(device=device)
+    sam_segmenter = SamBoxSegmenter(device=device) if use_sam else None
 
     while frame_index < total_frames:
         if should_cancel and should_cancel():
@@ -252,7 +258,7 @@ def detect_video(
 
         detections = detector.predict(frame)
         sam_masks: list[np.ndarray | None] = [None for _ in detections]
-        if detections:
+        if sam_segmenter is not None and detections:
             sam_masks = sam_segmenter.segment(
                 frame,
                 [[float(v) for v in det.bbox_xyxy] for det in detections],
@@ -268,18 +274,22 @@ def detect_video(
             vis = _draw_detections(frame, det_dicts)
             cv2.imwrite(str(preview_dir / preview_name), vis, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
 
-        frames_out.append(
-            FrameDetection(
-                frame_index=frame_index,
-                timestamp_sec=round(frame_index / fps, 3),
-                detections=det_dicts,
-                preview_path=preview_name,
-            )
+        frame_detection = FrameDetection(
+            frame_index=frame_index,
+            timestamp_sec=round(frame_index / fps, 3),
+            detections=det_dicts,
+            preview_path=preview_name,
         )
+        frames_out.append(frame_detection)
 
         processed += 1
         if det_dicts:
             with_detections += 1
+            if on_detection is not None:
+                event = frame_detection.to_dict()
+                event["width"] = width
+                event["height"] = height
+                on_detection(event)
         if on_progress is not None:
             on_progress(processed, total_planned, with_detections)
 
@@ -297,6 +307,8 @@ def detect_video(
         "height": height,
         "total_frames": total_frames,
         "frame_stride": frame_stride,
+        "imgsz": imgsz,
+        "use_sam": use_sam,
         "frames_processed": len(frames_out),
         "frames_with_detections": sum(1 for f in frames_out if f.detections),
         "frames": [f.to_dict() for f in frames_out],
@@ -306,6 +318,180 @@ def detect_video(
 
     logger.info(
         "Detection done: %d frames, %d with objects -> %s",
+        len(frames_out),
+        manifest["frames_with_detections"],
+        manifest_path,
+    )
+    return manifest
+
+
+def detect_stream(
+    stream_url: str,
+    model_path: Path,
+    *,
+    output_dir: Path,
+    frame_stride: int = 5,
+    confidence: float = 0.35,
+    device: str | int = 0,
+    imgsz: int = 416,
+    use_segmentation: bool | None = None,
+    use_sam: bool = False,
+    save_previews: bool = True,
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_detection: Callable[[dict[str, Any]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Detect objects in a live stream until cancellation; save a manifest."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    preview_dir = output_dir / "previews"
+    if save_previews:
+        preview_dir.mkdir(parents=True, exist_ok=True)
+
+    if use_segmentation is None:
+        use_segmentation = _meta_task_type() == "segment" or "seg" in model_path.name.lower()
+    if frame_stride < 1:
+        frame_stride = 1
+
+    def _open_capture() -> cv2.VideoCapture:
+        capture = cv2.VideoCapture(stream_url)
+        if capture.isOpened():
+            return capture
+        capture.release()
+        raise RuntimeError(f"Cannot open stream: {stream_url}")
+
+    cap = _open_capture()
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+
+    detector = BrailerDetector(
+        model_path=model_path,
+        confidence_threshold=confidence,
+        device=device,
+        use_segmentation=use_segmentation,
+        imgsz=imgsz,
+    )
+    sam_segmenter = SamBoxSegmenter(device=device) if use_sam else None
+
+    frames_out: list[FrameDetection] = []
+    frame_index = 0
+    processed = 0
+    with_detections = 0
+    failed_reads = 0
+    reconnects = 0
+    last_reconnect_at = 0.0
+    started_at = time.monotonic()
+
+    if on_progress is not None:
+        on_progress(0, 0, 0)
+
+    while True:
+        if should_cancel and should_cancel():
+            break
+
+        ok, frame = cap.read()
+        if not ok:
+            failed_reads += 1
+            if failed_reads >= 15:
+                now = time.monotonic()
+                if now - last_reconnect_at >= 1.0:
+                    reconnects += 1
+                    last_reconnect_at = now
+                    logger.warning(
+                        "Stream read failed %d times; reconnecting to %s (attempt %d)",
+                        failed_reads,
+                        stream_url,
+                        reconnects,
+                    )
+                    cap.release()
+                    while True:
+                        if should_cancel and should_cancel():
+                            break
+                        try:
+                            cap = _open_capture()
+                            fps = cap.get(cv2.CAP_PROP_FPS) or fps or 15.0
+                            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width or 0)
+                            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height or 0)
+                            failed_reads = 0
+                            break
+                        except RuntimeError:
+                            time.sleep(1.0)
+                    if should_cancel and should_cancel():
+                        break
+            time.sleep(0.2)
+            continue
+        failed_reads = 0
+
+        if frame_index % frame_stride != 0:
+            frame_index += 1
+            continue
+
+        if width <= 0 or height <= 0:
+            height, width = frame.shape[:2]
+
+        detections = detector.predict(frame)
+        sam_masks: list[np.ndarray | None] = [None for _ in detections]
+        if sam_segmenter is not None and detections:
+            sam_masks = sam_segmenter.segment(
+                frame,
+                [[float(v) for v in det.bbox_xyxy] for det in detections],
+            )
+        det_dicts = [
+            _detection_to_dict(d, width, height, sam_mask=sam_masks[index] if index < len(sam_masks) else None)
+            for index, d in enumerate(detections)
+        ]
+        preview_name: str | None = None
+
+        if save_previews and detections:
+            preview_name = f"frame_{frame_index:06d}.jpg"
+            vis = _draw_detections(frame, det_dicts)
+            cv2.imwrite(str(preview_dir / preview_name), vis, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+
+        frame_detection = FrameDetection(
+            frame_index=frame_index,
+            timestamp_sec=round(time.monotonic() - started_at, 3),
+            detections=det_dicts,
+            preview_path=preview_name,
+        )
+        frames_out.append(frame_detection)
+
+        processed += 1
+        if det_dicts:
+            with_detections += 1
+            if on_detection is not None:
+                event = frame_detection.to_dict()
+                event["width"] = width
+                event["height"] = height
+                on_detection(event)
+        if on_progress is not None:
+            on_progress(processed, 0, with_detections)
+
+        frame_index += 1
+
+    cap.release()
+
+    duration = frames_out[-1].timestamp_sec if frames_out else round(time.monotonic() - started_at, 3)
+    manifest = {
+        "video": stream_url,
+        "model": str(model_path.resolve()),
+        "fps": fps,
+        "width": width,
+        "height": height,
+        "total_frames": 0,
+        "duration_sec": duration,
+        "frame_stride": frame_stride,
+        "imgsz": imgsz,
+        "use_sam": use_sam,
+        "stream": True,
+        "frames_processed": len(frames_out),
+        "frames_with_detections": sum(1 for f in frames_out if f.detections),
+        "frames": [f.to_dict() for f in frames_out],
+    }
+    manifest_path = output_dir / "detections.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info(
+        "Stream detection done: %d frames, %d with objects -> %s",
         len(frames_out),
         manifest["frames_with_detections"],
         manifest_path,

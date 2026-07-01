@@ -54,6 +54,55 @@ select {
   font-size: 0.9rem;
   color-scheme: dark;
 }
+.stream-preview {
+  margin-top: 0.6rem;
+  background: #05070a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 720px;
+  position: relative;
+}
+.stream-preview video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  object-fit: contain;
+}
+.stream-detect-frame-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  pointer-events: none;
+  z-index: 2;
+}
+.stream-detect-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 3;
+}
+.stream-detect-overlay-status {
+  position: absolute;
+  left: 0.6rem;
+  top: 0.6rem;
+  background: rgba(5, 7, 10, 0.78);
+  border: 1px solid rgba(34, 197, 94, 0.65);
+  border-radius: 6px;
+  color: #dcfce7;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 0.28rem 0.45rem;
+  pointer-events: none;
+  z-index: 4;
+}
 input[type="number"]:focus,
 input[type="text"]:focus,
 select:focus {
@@ -91,6 +140,31 @@ button.small { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
 .model-item-meta { color: var(--muted); font-size: 0.74rem; margin-top: 0.2rem; }
 .model-item-actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
 .model-item-actions button { margin-top: 0; }
+.model-frame-panel {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border, #243044);
+  padding-top: 0.75rem;
+}
+.model-frame-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+.model-frame-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.55rem;
+  max-height: 42vh;
+  overflow-y: auto;
+}
+.model-frame-results .frame-card img {
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+.model-frame-panel #modelFrameMore {
+  margin-top: 0.6rem;
+}
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .panel-head h2 { margin: 0; }
 .train-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }

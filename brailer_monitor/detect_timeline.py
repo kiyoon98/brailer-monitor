@@ -35,7 +35,22 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
 def load_timeline(path: Path) -> dict[str, Any]:
     if not path.exists():
         return _empty_timeline()
-    return json.loads(path.read_text(encoding="utf-8"))
+    raw = path.read_text(encoding="utf-8")
+    try:
+        timeline = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        timeline, end = json.JSONDecoder().raw_decode(raw)
+        if raw[end:].strip():
+            # A previous interrupted write can leave an otherwise valid JSON
+            # document followed by stale bytes. Keep the valid prefix readable.
+            pass
+    if not isinstance(timeline, dict):
+        raise ValueError(f"Invalid timeline payload: {path}")
+    timeline.setdefault("videos", [])
+    timeline.setdefault("events", [])
+    return timeline
 
 
 def save_timeline(path: Path, timeline: dict[str, Any]) -> None:
@@ -330,7 +345,7 @@ def build_segments(
     return segments
 
 
-def compact_timeline_segments(path: Path, *, max_gap_sec: float = 5.0) -> dict[str, Any]:
+def compact_timeline_segments(path: Path, *, max_gap_sec: float = 10.0) -> dict[str, Any]:
     """Persist a display/report merge gap for the accumulated detection timeline."""
     timeline = load_timeline(path)
     if max_gap_sec < 0:
@@ -402,61 +417,71 @@ def get_segment_frames(path: Path, segment_id: str) -> dict[str, Any]:
     }
 
 
-def merge_job_manifest(
-    path: Path,
+def _event_from_frame(
+    *,
+    job_id: str,
+    video_name: str,
+    frame: dict[str, Any],
+) -> dict[str, Any] | None:
+    detections = frame.get("detections") or []
+    if not detections:
+        return None
+    ts = float(frame.get("timestamp_sec", 0))
+    video_start = parse_video_start_time(video_name)
+    abs_dt = absolute_frame_time(video_name, ts)
+    return {
+        "job_id": job_id,
+        "video_name": video_name,
+        "frame_index": frame.get("frame_index"),
+        "timestamp_sec": ts,
+        "video_start": video_start.isoformat() if video_start else None,
+        "absolute_time": abs_dt.isoformat() if abs_dt else None,
+        "absolute_time_label": format_absolute_time(abs_dt),
+        "preview_path": frame.get("preview_path"),
+        "detections": detections,
+    }
+
+
+def _upsert_video_record(
+    timeline: dict[str, Any],
     *,
     job_id: str,
     video_name: str,
     manifest: dict[str, Any],
-) -> int:
-    """Append detection events from a completed job; return new event count."""
-    timeline = load_timeline(path)
+    minimum_duration_sec: float = 0.0,
+) -> None:
     video_start = parse_video_start_time(video_name)
     video_start_iso = video_start.isoformat() if video_start else None
-    duration_sec = _video_duration_sec(manifest)
-
-    added = 0
-    for frame in manifest.get("frames", []):
-        detections = frame.get("detections") or []
-        if not detections:
-            continue
-        ts = float(frame.get("timestamp_sec", 0))
-        abs_dt = absolute_frame_time(video_name, ts)
-        timeline["events"].append(
-            {
-                "job_id": job_id,
-                "video_name": video_name,
-                "frame_index": frame.get("frame_index"),
-                "timestamp_sec": ts,
-                "video_start": video_start_iso,
-                "absolute_time": abs_dt.isoformat() if abs_dt else None,
-                "absolute_time_label": format_absolute_time(abs_dt),
-                "preview_path": frame.get("preview_path"),
-                "detections": detections,
-            }
-        )
-        added += 1
-
+    duration_sec = max(_video_duration_sec(manifest), float(minimum_duration_sec or 0.0))
     video_end = None
     if video_start is not None:
         video_end = (video_start + timedelta(seconds=duration_sec)).isoformat()
 
-    timeline["videos"].append(
-        {
-            "job_id": job_id,
-            "video_name": video_name,
-            "video_start": video_start_iso,
-            "video_end": video_end,
-            "duration_sec": round(duration_sec, 3),
-            "fps": manifest.get("fps"),
-            "frame_stride": manifest.get("frame_stride"),
-            "total_frames": manifest.get("total_frames"),
-            "frames_processed": manifest.get("frames_processed", 0),
-            "frames_with_detections": manifest.get("frames_with_detections", 0),
-            "added_at": _now_iso(),
-        }
-    )
+    record = {
+        "job_id": job_id,
+        "video_name": video_name,
+        "video_start": video_start_iso,
+        "video_end": video_end,
+        "duration_sec": round(duration_sec, 3),
+        "fps": manifest.get("fps"),
+        "frame_stride": manifest.get("frame_stride"),
+        "total_frames": manifest.get("total_frames"),
+        "frames_processed": manifest.get("frames_processed", 0),
+        "frames_with_detections": manifest.get("frames_with_detections", 0),
+        "added_at": _now_iso(),
+    }
+    videos = timeline.setdefault("videos", [])
+    for index, existing in enumerate(videos):
+        if existing.get("job_id") == job_id:
+            previous_added = existing.get("added_at")
+            if previous_added:
+                record["added_at"] = previous_added
+            videos[index] = record
+            return
+    videos.append(record)
 
+
+def _sort_timeline_events(timeline: dict[str, Any]) -> None:
     timeline["events"].sort(
         key=lambda event: (
             event.get("absolute_time") or "",
@@ -464,6 +489,77 @@ def merge_job_manifest(
             event.get("frame_index") or 0,
         )
     )
+
+
+def merge_frame_detection(
+    path: Path,
+    *,
+    job_id: str,
+    video_name: str,
+    frame: dict[str, Any],
+    manifest: dict[str, Any] | None = None,
+) -> int:
+    """Merge one detected frame immediately; return 1 when it adds a new event."""
+    event = _event_from_frame(job_id=job_id, video_name=video_name, frame=frame)
+    if event is None:
+        return 0
+
+    timeline = load_timeline(path)
+    frame_index = event.get("frame_index")
+    existing_count = len(timeline.get("events", []))
+    timeline["events"] = [
+        item
+        for item in timeline.get("events", [])
+        if not (item.get("job_id") == job_id and item.get("frame_index") == frame_index)
+    ]
+    removed_duplicate = len(timeline["events"]) != existing_count
+    timeline["events"].append(event)
+    _upsert_video_record(
+        timeline,
+        job_id=job_id,
+        video_name=video_name,
+        manifest=manifest or {},
+        minimum_duration_sec=float(event.get("timestamp_sec") or 0.0),
+    )
+    _sort_timeline_events(timeline)
+    save_timeline(path, timeline)
+    return 0 if removed_duplicate else 1
+
+
+def merge_job_manifest(
+    path: Path,
+    *,
+    job_id: str,
+    video_name: str,
+    manifest: dict[str, Any],
+    replace_job: bool = False,
+) -> int:
+    """Append detection events from a completed job; return new event count."""
+    timeline = load_timeline(path)
+    if replace_job:
+        timeline["events"] = [
+            event for event in timeline.get("events", []) if event.get("job_id") != job_id
+        ]
+        timeline["videos"] = [
+            video for video in timeline.get("videos", []) if video.get("job_id") != job_id
+        ]
+
+    added = 0
+    for frame in manifest.get("frames", []):
+        event = _event_from_frame(job_id=job_id, video_name=video_name, frame=frame)
+        if event is None:
+            continue
+        timeline["events"].append(event)
+        added += 1
+
+    _upsert_video_record(
+        timeline,
+        job_id=job_id,
+        video_name=video_name,
+        manifest=manifest,
+    )
+
+    _sort_timeline_events(timeline)
     save_timeline(path, timeline)
     return added
 

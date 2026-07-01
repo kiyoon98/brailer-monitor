@@ -24,12 +24,22 @@ class ModelLibraryTests(unittest.TestCase):
                 class_names=["brailer"],
                 train_images=10,
                 val_images=2,
+                dataset_frames=[
+                    {
+                        "split": "train",
+                        "image_name": "frame_000001.jpg",
+                        "frame_index": 1,
+                        "preview_url": "/api/pipeline/dataset/preview/train/frame_000001.jpg",
+                        "objects": [],
+                    }
+                ],
             )
 
             loaded = library.get(record.id)
             self.assertEqual(loaded.id, record.id)
             self.assertEqual(loaded.task_type, "segment")
             self.assertEqual(loaded.epochs, 12)
+            self.assertEqual(loaded.dataset_frames[0]["image_name"], "frame_000001.jpg")
             self.assertTrue(Path(loaded.weights_path).exists())
 
     def test_invalid_model_id_cannot_escape_library_root(self) -> None:

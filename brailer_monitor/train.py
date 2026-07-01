@@ -87,6 +87,7 @@ def run_training(
     name: str | None = None,
     task_type: str | None = None,
     on_epoch_end: Callable[[int, int], None] | None = None,
+    on_batch_end: Callable[[int, int, int, int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> Path:
     """
@@ -115,7 +116,10 @@ def run_training(
     from ultralytics import YOLO
 
     model = YOLO(base_model)
-    if on_epoch_end is not None or should_cancel is not None:
+    if on_epoch_end is not None or on_batch_end is not None or should_cancel is not None:
+
+        batch_epoch = 0
+        batch_index = 0
 
         def _report_epoch_progress(trainer: object) -> None:
             if on_epoch_end is None:
@@ -123,6 +127,18 @@ def run_training(
             epoch = int(getattr(trainer, "epoch", 0)) + 1
             total = int(getattr(trainer, "epochs", epochs))
             on_epoch_end(epoch, total)
+
+        def _report_batch_progress(trainer: object, index: int) -> None:
+            if on_batch_end is None:
+                return
+            epoch = int(getattr(trainer, "epoch", 0)) + 1
+            total_epochs = int(getattr(trainer, "epochs", epochs))
+            loader = getattr(trainer, "train_loader", None)
+            try:
+                total_batches = len(loader) if loader is not None else 0
+            except TypeError:
+                total_batches = 0
+            on_batch_end(epoch, total_epochs, index, total_batches)
 
         def _epoch_start_callback(trainer: object) -> None:
             if should_cancel and should_cancel():
@@ -137,8 +153,16 @@ def run_training(
             _report_epoch_progress(trainer)
 
         def _batch_callback(trainer: object) -> None:
+            nonlocal batch_epoch, batch_index
             if should_cancel and should_cancel():
                 setattr(trainer, "stop", True)
+                return
+            epoch = int(getattr(trainer, "epoch", 0)) + 1
+            if epoch != batch_epoch:
+                batch_epoch = epoch
+                batch_index = 0
+            batch_index += 1
+            _report_batch_progress(trainer, batch_index)
 
         model.add_callback("on_train_epoch_start", _epoch_start_callback)
         model.add_callback("on_train_epoch_end", _epoch_end_callback)
@@ -161,6 +185,8 @@ def run_training(
         patience=20,
         save=True,
         plots=True,
+        workers=2,
+        cache=False,
     )
     if should_cancel and should_cancel():
         raise TrainingCancelled("Training cancelled by user")

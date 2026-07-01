@@ -35,6 +35,7 @@ class ModelRecord:
     metrics: dict[str, float] | None = None
     size_bytes: int = 0
     source: str = "train"
+    dataset_frames: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,6 +77,7 @@ class ModelLibrary:
         train_images: int = 0,
         val_images: int = 0,
         metrics: dict[str, float] | None = None,
+        dataset_frames: list[dict[str, Any]] | None = None,
         source: str = "train",
     ) -> ModelRecord:
         weights_src = Path(weights_src)
@@ -104,6 +106,7 @@ class ModelLibrary:
             metrics=metrics,
             size_bytes=target.stat().st_size,
             source=source,
+            dataset_frames=list(dataset_frames or []),
         )
         self._write_meta(record)
         logger.info("Registered model %s (%s) -> %s", model_id, name, target)

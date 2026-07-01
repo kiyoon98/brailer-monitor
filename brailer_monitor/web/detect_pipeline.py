@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Any
 
 from ..cvat_import import import_cvat
+from ..dataset_preview import list_dataset_frames
 from ..detect_timeline import (
     compact_timeline_segments,
     get_segment_frames,
     list_timeline,
+    merge_frame_detection,
     merge_job_manifest,
     reset_timeline,
     timeline_summary,
@@ -38,6 +40,19 @@ SAVE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_cuda_oom_error(message: str) -> bool:
+    lowered = message.lower()
+    return "cuda" in lowered and (
+        "out of memory" in lowered
+        or "memoryallocation" in lowered
+        or "cudaerrormemoryallocation" in lowered
+    )
+
+
+def _is_cpu_device(device: str | int) -> bool:
+    return isinstance(device, str) and device.lower() == "cpu"
 
 
 def _safe_saved_result_id(name: str) -> str:
@@ -65,6 +80,8 @@ class PipelineState:
     train_progress: str | None = None
     train_epoch: int = 0
     train_epochs: int = 0
+    train_batch: int = 0
+    train_batches: int = 0
     train_progress_pct: float = 0.0
     train_weights: str | None = None
     train_error: str | None = None
@@ -72,6 +89,7 @@ class PipelineState:
     active_model_name: str | None = None
     detect_status: str = "idle"
     detect_job_id: str | None = None
+    detect_video_name: str | None = None
     detect_progress_pct: float = 0.0
     detect_processed_frames: int = 0
     detect_total_frames: int = 0
@@ -79,7 +97,16 @@ class PipelineState:
     detect_queue_pending: int = 0
     detect_batch_total: int = 0
     detect_batch_done: int = 0
+    detect_batch_index: int = 0
     detect_timeline_events: int = 0
+    detect_overlay_job_id: str | None = None
+    detect_overlay_preview_path: str | None = None
+    detect_overlay_frame_index: int | None = None
+    detect_overlay_timestamp_sec: float | None = None
+    detect_overlay_width: int = 0
+    detect_overlay_height: int = 0
+    detect_overlay_detections: list[dict[str, Any]] | None = None
+    detect_overlay_updated_at: str | None = None
     detect_error: str | None = None
     updated_at: str = ""
 
@@ -91,7 +118,7 @@ def _detect_is_active(state: PipelineState, *, threads: dict[str, threading.Thre
     return (
         state.detect_status in {"running", "cancelling"}
         or (state.detect_queue_pending or 0) > 0
-        or bool(threads)
+        or any(thread.is_alive() for thread in threads.values())
     )
 
 @dataclass
@@ -142,6 +169,16 @@ class DetectPipelineManager:
     def _clear_train_cancel(self) -> None:
         self._train_cancel.clear()
 
+    def _request_detect_worker_stop(self) -> None:
+        state = self._load_state()
+        job_id = state.detect_job_id
+        if not job_id:
+            return
+        try:
+            (self._job_dir(job_id) / "stop.txt").write_text("stop", encoding="utf-8")
+        except OSError:
+            pass
+
     def cancel_detection(self) -> dict[str, Any]:
         with self._lock:
             state = self._load_state()
@@ -151,6 +188,7 @@ class DetectPipelineManager:
                 return {"cancelled": False, "reason": "not_running"}
 
             self._detect_cancel.set()
+            self._request_detect_worker_stop()
             self._detect_queue.clear()
             state.detect_status = "cancelling"
             state.detect_queue_pending = 0
@@ -252,11 +290,20 @@ class DetectPipelineManager:
                 class_names=class_names,
                 train_images=int(meta.get("train_images", 0) or 0),
                 val_images=int(meta.get("val_images", 0) or 0),
+                dataset_frames=self._dataset_frame_samples(limit=48),
                 source="train",
             )
         except Exception:
             logger.exception("Failed to register trained model into library")
             return None
+
+    def _dataset_frame_samples(self, *, limit: int = 48) -> list[dict[str, Any]]:
+        try:
+            result = list_dataset_frames(self.dataset_root, split="all", offset=0, limit=limit)
+        except Exception:
+            logger.exception("Failed to collect dataset frame samples")
+            return []
+        return list(result.get("frames") or [])
 
     def list_models(self) -> dict[str, Any]:
         state = self._load_state()
@@ -290,6 +337,16 @@ class DetectPipelineManager:
             state.train_error = None
             self._save_state(state)
             return {"activated": True, "model": record.to_dict()}
+
+    def model_frames(self, model_id: str, *, limit: int = 48) -> dict[str, Any]:
+        record = self.model_library.get(model_id)
+        frames = list(record.dataset_frames or [])
+        return {
+            "model": record.to_dict(),
+            "source": "model",
+            "total": len(frames),
+            "frames": frames[:limit],
+        }
 
     def delete_model(self, model_id: str) -> dict[str, Any]:
         with self._lock:
@@ -328,12 +385,15 @@ class DetectPipelineManager:
     def _finish_detection_cancelled(self) -> None:
         state = self._load_state()
         state.detect_status = "cancelled"
+        state.detect_job_id = None
         state.detect_queue_pending = 0
+        state.detect_video_name = None
+        state.detect_batch_index = 0
         state.detect_error = "사용자가 중지함"
         state.detect_batch_total = self._batch_total
         state.detect_batch_done = self._batch_done
         summary = timeline_summary(self._timeline_path)
-        state.detect_timeline_events = summary["segment_count"]
+        state.detect_timeline_events = summary["event_count"]
         self._save_state(state)
 
     def _recover_stale_cancel(self) -> None:
@@ -356,12 +416,15 @@ class DetectPipelineManager:
     def _finish_stale_detect(self) -> None:
         state = self._load_state()
         state.detect_status = "cancelled"
+        state.detect_job_id = None
         state.detect_queue_pending = 0
+        state.detect_video_name = None
+        state.detect_batch_index = 0
         state.detect_error = "탐지 세션이 끊겨 중지됨 (서버 재시작 등)"
         state.detect_batch_total = self._batch_total
         state.detect_batch_done = self._batch_done
         summary = timeline_summary(self._timeline_path)
-        state.detect_timeline_events = summary["segment_count"]
+        state.detect_timeline_events = summary["event_count"]
         self._save_state(state)
 
     def _recover_stale_detect(self) -> None:
@@ -376,6 +439,145 @@ class DetectPipelineManager:
                 logger.warning("Recovering stale detect_status=%s (no active threads/queue)", state.detect_status)
                 self._detect_queue.clear()
                 self._finish_stale_detect()
+
+    def _recover_crashed_detect_worker(self) -> None:
+        state = self._load_state()
+        job_id = state.detect_job_id
+        if state.detect_status != "running" or not job_id:
+            return
+
+        job_dir = self._job_dir(job_id)
+        error_file = job_dir / "worker_error.txt"
+        if not error_file.exists():
+            return
+        try:
+            if time.time() - error_file.stat().st_mtime < 2:
+                return
+            detail = error_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+
+        try:
+            job = self.get_detect_job(job_id)
+        except FileNotFoundError:
+            return
+        if job.status != "running":
+            return
+
+        proc = self._detect_procs.pop(job_id, None)
+        if proc is not None:
+            self._terminate_process(proc)
+
+        if _is_cuda_oom_error(detail):
+            template = self._detect_queue[0].copy() if self._detect_queue else {}
+            model_path = template.get("model_path") or self._active_weights(state)
+            if model_path is not None:
+                retry_item = {
+                    "video_name": state.detect_video_name or job.video_name,
+                    "video_path": job_dir / "video.mp4",
+                    "model_path": model_path,
+                    "frame_stride": int(template.get("frame_stride", 5)),
+                    "confidence": float(template.get("confidence", 0.6)),
+                    "imgsz": int(template.get("imgsz", 416)),
+                    "use_sam": bool(template.get("use_sam", False)),
+                    "device": "cpu",
+                    "batch_index": state.detect_batch_index or 0,
+                }
+                job.status = "error"
+                job.error = "GPU 메모리 부족으로 CPU에서 재시도합니다."
+                self._save_job(job)
+                self._detect_queue.insert(0, retry_item)
+                state.detect_job_id = None
+                state.detect_error = "GPU 메모리 부족으로 CPU에서 재시도 중입니다."
+                state.detect_queue_pending = len(self._detect_queue)
+                self._save_state(state)
+                logger.warning("Recovered crashed CUDA OOM job %s; retrying on CPU", job_id)
+                self._start_next_queued_or_finish(success=False)
+                return
+
+        job.status = "error"
+        job.error = detail
+        self._save_job(job)
+        self._batch_done += 1
+        self._batch_failed += 1
+        state.detect_batch_done = self._batch_done
+        state.detect_error = detail
+        self._save_state(state)
+        logger.error("Recovered crashed detection worker for job %s", job_id)
+        self._start_next_queued_or_finish(success=False)
+
+    def _recover_completed_detect_worker(self) -> None:
+        state = self._load_state()
+        job_id = state.detect_job_id
+        if state.detect_status != "running" or not job_id:
+            return
+
+        job_dir = self._job_dir(job_id)
+        manifest_path = job_dir / "detections.json"
+        if not manifest_path.exists():
+            return
+
+        try:
+            job = self.get_detect_job(job_id)
+        except FileNotFoundError:
+            return
+        if job.status != "running":
+            return
+
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+
+        progress_file = job_dir / "progress.json"
+        if progress_file.exists():
+            try:
+                progress = json.loads(progress_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                progress = {}
+            processed = int(progress.get("processed", 0))
+            total = int(progress.get("total", 0))
+            if total > 0 and processed < total:
+                return
+
+        video_name = state.detect_video_name or job.video_name
+        manifest["video_name"] = video_name
+        video_start = parse_video_start_time(video_name)
+        if video_start:
+            manifest["video_start"] = video_start.isoformat()
+        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        merge_job_manifest(
+            self._timeline_path,
+            job_id=job_id,
+            video_name=video_name,
+            manifest=manifest,
+        )
+
+        job.status = "completed"
+        job.progress = 1.0
+        job.processed_frames = int(manifest.get("frames_processed", 0))
+        job.total_frames = job.processed_frames
+        job.frames_with_detections = int(manifest.get("frames_with_detections", 0))
+        job.manifest_path = str(manifest_path.resolve())
+        self._save_job(job)
+
+        self._batch_done = max(self._batch_done, state.detect_batch_done) + 1
+        summary = timeline_summary(self._timeline_path)
+        state.detect_progress_pct = 1.0
+        state.detect_processed_frames = job.processed_frames
+        state.detect_total_frames = job.total_frames
+        state.detect_frames_with_objects = job.frames_with_detections
+        state.detect_batch_done = self._batch_done
+        state.detect_timeline_events = summary["event_count"]
+        self._save_state(state)
+
+        proc = self._detect_procs.pop(job_id, None)
+        if proc is not None:
+            self._terminate_process(proc)
+
+        logger.warning("Recovered completed detection job %s from manifest", job_id)
+        self._start_next_queued_or_finish(success=True)
 
     def _load_state(self) -> PipelineState:
         if not self._state_path.exists():
@@ -407,8 +609,17 @@ class DetectPipelineManager:
     def get_state(self) -> dict[str, Any]:
         self._recover_stale_cancel()
         self._recover_stale_train()
+        self._recover_completed_detect_worker()
+        self._recover_crashed_detect_worker()
         self._recover_stale_detect()
         state = self._load_state()
+        if state.detect_status in {"cancelled", "completed", "error", "idle"} and (
+            state.detect_job_id or state.detect_video_name or state.detect_batch_index
+        ):
+            state.detect_job_id = None
+            state.detect_video_name = None
+            state.detect_batch_index = 0
+            self._save_state(state)
         payload = state.to_dict()
         meta_path = self.dataset_root / "import_meta.json"
         if meta_path.exists():
@@ -433,10 +644,10 @@ class DetectPipelineManager:
         self._save_state(state)
         return timeline_summary(self._timeline_path)
 
-    def compact_timeline(self, *, max_gap_sec: float = 5.0) -> dict[str, Any]:
+    def compact_timeline(self, *, max_gap_sec: float = 10.0) -> dict[str, Any]:
         result = compact_timeline_segments(self._timeline_path, max_gap_sec=max_gap_sec)
         state = self._load_state()
-        state.detect_timeline_events = result["segment_count"]
+        state.detect_timeline_events = result["event_count"]
         self._save_state(state)
         return result
 
@@ -553,10 +764,12 @@ class DetectPipelineManager:
                 else:
                     current_jobs.mkdir(parents=True, exist_ok=True)
                 summary = timeline_summary(self._timeline_path)
-                state.detect_timeline_events = summary["segment_count"]
+                state.detect_timeline_events = summary["event_count"]
                 state.detect_status = "completed" if summary["segment_count"] else "idle"
                 state.detect_error = None
                 state.detect_job_id = None
+                state.detect_video_name = None
+                state.detect_batch_index = 0
                 state.detect_queue_pending = 0
                 self._save_state(state)
             except Exception:
@@ -619,8 +832,8 @@ class DetectPipelineManager:
         self,
         *,
         epochs: int = 50,
-        batch: int = 8,
-        imgsz: int = 640,
+        batch: int = 4,
+        imgsz: int = 416,
         device: str | int = 0,
     ) -> dict[str, Any]:
         state = self._load_state()
@@ -639,6 +852,8 @@ class DetectPipelineManager:
         state.train_progress = "starting"
         state.train_epoch = 0
         state.train_epochs = epochs
+        state.train_batch = 0
+        state.train_batches = 0
         state.train_progress_pct = 0.0
         state.train_error = None
         self._save_state(state)
@@ -652,15 +867,30 @@ class DetectPipelineManager:
         thread.start()
         return {"started": True}
 
-    def _update_train_progress(self, epoch: int, total_epochs: int) -> None:
+    def _update_train_progress(
+        self,
+        epoch: int,
+        total_epochs: int,
+        batch_index: int = 0,
+        total_batches: int = 0,
+    ) -> None:
         state = self._load_state()
         state.train_epoch = epoch
         state.train_epochs = total_epochs
-        state.train_progress_pct = epoch / max(total_epochs, 1)
+        state.train_batch = batch_index
+        state.train_batches = total_batches
+        if total_batches:
+            epoch_base = max(epoch - 1, 0)
+            batch_fraction = batch_index / max(total_batches, 1)
+            progress = (epoch_base + batch_fraction) / max(total_epochs, 1)
+        else:
+            progress = epoch / max(total_epochs, 1)
+        state.train_progress_pct = min(progress, 0.999)
         if self._train_cancel.is_set() or state.train_progress == "cancelling":
             state.train_progress = "cancelling"
         else:
-            state.train_progress = f"epoch {epoch}/{total_epochs}"
+            suffix = f" · batch {batch_index}/{total_batches}" if total_batches else ""
+            state.train_progress = f"epoch {epoch}/{total_epochs}{suffix}"
         self._save_state(state)
 
     def _run_training(self, epochs: int, batch: int, imgsz: int, device: str | int) -> None:
@@ -668,6 +898,8 @@ class DetectPipelineManager:
             state = self._load_state()
             state.train_progress = "training"
             state.train_epochs = epochs
+            state.train_batch = 0
+            state.train_batches = 0
             self._save_state(state)
 
             weights = run_training(
@@ -678,6 +910,7 @@ class DetectPipelineManager:
                 device=device,
                 task_type=load_task_type(self.dataset_root),
                 on_epoch_end=self._update_train_progress,
+                on_batch_end=self._update_train_progress,
                 should_cancel=self._train_cancel.is_set,
             )
             state = self._load_state()
@@ -725,6 +958,8 @@ class DetectPipelineManager:
         model_path: Path | None = None,
         frame_stride: int = 5,
         confidence: float = 0.6,
+        imgsz: int = 416,
+        use_sam: bool = False,
         device: str | int = 0,
     ) -> DetectJob | dict[str, Any]:
         return self.start_detection_batch(
@@ -732,6 +967,8 @@ class DetectPipelineManager:
             model_path=model_path,
             frame_stride=frame_stride,
             confidence=confidence,
+            imgsz=imgsz,
+            use_sam=use_sam,
             device=device,
         )
 
@@ -758,6 +995,8 @@ class DetectPipelineManager:
         model_path: Path | None = None,
         frame_stride: int = 5,
         confidence: float = 0.6,
+        imgsz: int = 416,
+        use_sam: bool = False,
         device: str | int = 0,
     ) -> dict[str, Any]:
         if not videos:
@@ -783,6 +1022,7 @@ class DetectPipelineManager:
         with self._lock:
             state = self._load_state()
             running = state.detect_status == "running" and self._detect_session_alive()
+            batch_index_base = self._batch_total if running else 0
 
             if not running:
                 self._batch_total = len(prepared_videos)
@@ -790,6 +1030,7 @@ class DetectPipelineManager:
                 self._batch_failed = 0
                 state.detect_batch_total = self._batch_total
                 state.detect_batch_done = 0
+                state.detect_batch_index = 0
                 state.detect_status = "running"
                 state.detect_error = None
                 state.detect_processed_frames = 0
@@ -805,7 +1046,10 @@ class DetectPipelineManager:
                     "model_path": model_path,
                     "frame_stride": frame_stride,
                     "confidence": confidence,
+                    "imgsz": imgsz,
+                    "use_sam": use_sam,
                     "device": device,
+                    "batch_index": batch_index_base + index + 1,
                 }
                 if prepared.get("remote_url"):
                     item["remote_url"] = prepared["remote_url"]
@@ -843,6 +1087,8 @@ class DetectPipelineManager:
                     state.detect_error = "사용자가 중지함"
                     state.detect_queue_pending = 0
                     state.detect_job_id = None
+                    state.detect_video_name = None
+                    state.detect_batch_index = 0
                     self._save_state(state)
                 queued_jobs[0] = {
                     "video_name": first_item["video_name"],
@@ -874,11 +1120,109 @@ class DetectPipelineManager:
             "job": queued_jobs[0] if queued_jobs and queued_jobs[0].get("job_id") else None,
         }
 
+    def start_stream_detection(
+        self,
+        stream_url: str,
+        *,
+        model_path: Path | None = None,
+        frame_stride: int = 5,
+        confidence: float = 0.6,
+        imgsz: int = 416,
+        use_sam: bool = False,
+        device: str | int = 0,
+    ) -> dict[str, Any]:
+        stream_url = stream_url.strip()
+        if not stream_url:
+            raise ValueError("스트림 주소를 입력하세요.")
+
+        state = self._load_state()
+        if model_path is None:
+            model_path = self._active_weights(state)
+        if model_path is None:
+            task = load_task_type(self.dataset_root)
+            model_path = Path("models/brailer_detect.pt" if task == "detect" else "models/brailer_seg.pt")
+        if not model_path.exists():
+            raise FileNotFoundError(
+                "학습된 모델이 없습니다. 먼저 학습하거나 모델 라이브러리에서 모델을 선택하세요."
+            )
+
+        self._recover_stale_detect()
+        state = self._load_state()
+        if _detect_is_active(state, threads=self._detect_threads):
+            raise RuntimeError("탐지가 진행 중입니다. 먼저 중지하세요.")
+
+        self._clear_detection_cancel()
+        self._detect_queue.clear()
+        self._batch_total = 1
+        self._batch_done = 0
+        self._batch_failed = 0
+
+        now = datetime.now()
+        video_name = f"live_stream_{now:%y%m%d_%H%M%S}.mp4"
+        job_id = uuid.uuid4().hex[:12]
+        directory = self._job_dir(job_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "stop.txt").unlink(missing_ok=True)
+
+        job = DetectJob(
+            job_id=job_id,
+            video_name=video_name,
+            created_at=_now_iso(),
+            status="running",
+        )
+        self._save_job(job)
+        meta = {
+            "video_name": video_name,
+            "video_start": parse_video_start_time(video_name).isoformat(),
+            "stream_url": stream_url,
+        }
+        (directory / "video_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+        state.detect_status = "running"
+        state.detect_job_id = job_id
+        state.detect_video_name = video_name
+        state.detect_batch_index = 1
+        state.detect_batch_total = 1
+        state.detect_batch_done = 0
+        state.detect_queue_pending = 0
+        state.detect_processed_frames = 0
+        state.detect_total_frames = 0
+        state.detect_frames_with_objects = 0
+        state.detect_progress_pct = 0.0
+        state.detect_overlay_job_id = None
+        state.detect_overlay_preview_path = None
+        state.detect_overlay_frame_index = None
+        state.detect_overlay_timestamp_sec = None
+        state.detect_overlay_width = 0
+        state.detect_overlay_height = 0
+        state.detect_overlay_detections = None
+        state.detect_overlay_updated_at = None
+        state.detect_error = None
+        self._save_state(state)
+
+        thread = threading.Thread(
+            target=self._run_stream_detection,
+            args=(job_id, stream_url, model_path, frame_stride, confidence, imgsz, use_sam, device, video_name),
+            daemon=True,
+        )
+        self._detect_threads[job_id] = thread
+        thread.start()
+        return {
+            "batch_size": 1,
+            "batch_total": 1,
+            "batch_done": 0,
+            "queue_pending": 0,
+            "jobs": [{"job_id": job_id, "video_name": video_name, "status": "running"}],
+            "job": {"job_id": job_id, "video_name": video_name, "status": "running"},
+        }
+
     def _launch_detection(self, item: dict[str, Any]) -> DetectJob:
         video_name: str = item["video_name"]
         model_path: Path = item["model_path"]
         frame_stride: int = item["frame_stride"]
         confidence: float = item["confidence"]
+        imgsz: int = int(item.get("imgsz") or 416)
+        use_sam: bool = bool(item.get("use_sam", False))
         device: str | int = item["device"]
 
         job_id = uuid.uuid4().hex[:12]
@@ -890,6 +1234,8 @@ class DetectPipelineManager:
 
         state = self._load_state()
         state.detect_status = "running"
+        state.detect_video_name = video_name
+        state.detect_batch_index = int(item.get("batch_index") or 0)
         state.detect_processed_frames = 0
         state.detect_total_frames = 0
         state.detect_progress_pct = 0.0
@@ -939,10 +1285,20 @@ class DetectPipelineManager:
             raise DetectionCancelled("Detection cancelled by user")
         state.detect_status = "running"
         state.detect_job_id = job_id
+        state.detect_video_name = video_name
+        state.detect_batch_index = int(item.get("batch_index") or 0)
         state.detect_progress_pct = 0.0
         state.detect_processed_frames = 0
         state.detect_total_frames = 0
         state.detect_frames_with_objects = 0
+        state.detect_overlay_job_id = None
+        state.detect_overlay_preview_path = None
+        state.detect_overlay_frame_index = None
+        state.detect_overlay_timestamp_sec = None
+        state.detect_overlay_width = 0
+        state.detect_overlay_height = 0
+        state.detect_overlay_detections = None
+        state.detect_overlay_updated_at = None
         state.detect_error = None
         state.detect_queue_pending = len(self._detect_queue)
         state.detect_batch_total = self._batch_total
@@ -957,7 +1313,7 @@ class DetectPipelineManager:
 
         thread = threading.Thread(
             target=self._run_detection,
-            args=(job_id, target_video, model_path, frame_stride, confidence, device, video_name),
+            args=(job_id, target_video, model_path, frame_stride, confidence, imgsz, use_sam, device, video_name),
             daemon=True,
         )
         self._detect_threads[job_id] = thread
@@ -975,7 +1331,7 @@ class DetectPipelineManager:
         job.processed_frames = processed
         job.total_frames = total
         job.frames_with_detections = with_detections
-        job.progress = processed / max(total, 1)
+        job.progress = processed / total if total > 0 else 0.0
         self._save_job(job)
 
         state = self._load_state()
@@ -1004,18 +1360,22 @@ class DetectPipelineManager:
         self,
         job_id: str,
         video_path: Path,
+        video_name: str,
         model_path: Path,
         frame_stride: int,
         confidence: float,
+        imgsz: int,
+        use_sam: bool,
         device: str | int,
     ) -> dict[str, Any]:
         """Run YOLO inference in a separate process so a CUDA crash can't wedge
         the server. Returns the detection manifest the worker wrote to disk."""
         job_dir = self._job_dir(job_id)
         progress_file = job_dir / "progress.json"
+        events_file = job_dir / "events.jsonl"
         error_file = job_dir / "worker_error.txt"
         log_file = job_dir / "worker.log"
-        for stale in (progress_file, error_file):
+        for stale in (progress_file, events_file, error_file):
             stale.unlink(missing_ok=True)
 
         cmd = [
@@ -1032,13 +1392,24 @@ class DetectPipelineManager:
             str(frame_stride),
             "--confidence",
             str(confidence),
+            "--imgsz",
+            str(imgsz),
+            "--sam",
+            "yes" if use_sam else "no",
             "--device",
             str(device),
             "--progress-file",
             str(progress_file),
+            "--events-file",
+            str(events_file),
         ]
 
         last_progress: dict[str, Any] | None = None
+        events_offset = 0
+        event_manifest = {
+            "frame_stride": frame_stride,
+            "total_frames": self._planned_frame_count(video_path, frame_stride),
+        }
 
         def _drain_progress() -> None:
             nonlocal last_progress
@@ -1057,6 +1428,53 @@ class DetectPipelineManager:
                     int(prog.get("with", 0)),
                 )
 
+        def _drain_events() -> None:
+            nonlocal events_offset
+            if not events_file.exists():
+                return
+            try:
+                with events_file.open("rb") as handle:
+                    handle.seek(events_offset)
+                    data = handle.read()
+            except OSError:
+                return
+            if not data:
+                return
+            newline_at = data.rfind(b"\n")
+            if newline_at < 0:
+                return
+            chunk = data[: newline_at + 1]
+            events_offset += len(chunk)
+            changed = False
+            for raw_line in chunk.splitlines():
+                if not raw_line.strip():
+                    continue
+                try:
+                    frame = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                changed = merge_frame_detection(
+                    self._timeline_path,
+                    job_id=job_id,
+                    video_name=video_name,
+                    frame=frame,
+                    manifest=event_manifest,
+                ) > 0 or changed
+            if changed:
+                summary = timeline_summary(self._timeline_path)
+                state = self._load_state()
+                if state.detect_job_id == job_id:
+                    state.detect_timeline_events = summary["event_count"]
+                    state.detect_overlay_job_id = job_id
+                    state.detect_overlay_preview_path = frame.get("preview_path")
+                    state.detect_overlay_frame_index = frame.get("frame_index")
+                    state.detect_overlay_timestamp_sec = frame.get("timestamp_sec")
+                    state.detect_overlay_width = int(frame.get("width") or 0)
+                    state.detect_overlay_height = int(frame.get("height") or 0)
+                    state.detect_overlay_detections = frame.get("detections") or []
+                    state.detect_overlay_updated_at = _now_iso()
+                    self._save_state(state)
+
         with open(log_file, "w", encoding="utf-8") as log_handle:
             proc = subprocess.Popen(
                 cmd,
@@ -1071,9 +1489,11 @@ class DetectPipelineManager:
                     self._terminate_process(proc)
                     raise DetectionCancelled("Detection cancelled by user")
                 _drain_progress()
+                _drain_events()
                 time.sleep(0.5)
 
             _drain_progress()
+            _drain_events()
             if self._detection_cancelled():
                 raise DetectionCancelled("Detection cancelled by user")
 
@@ -1090,6 +1510,164 @@ class DetectPipelineManager:
             manifest_path = job_dir / "detections.json"
             if not manifest_path.exists():
                 raise RuntimeError("탐지 결과 파일(detections.json)이 생성되지 않았습니다.")
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        finally:
+            self._detect_procs.pop(job_id, None)
+
+    def _run_stream_detection_subprocess(
+        self,
+        job_id: str,
+        stream_url: str,
+        video_name: str,
+        model_path: Path,
+        frame_stride: int,
+        confidence: float,
+        imgsz: int,
+        use_sam: bool,
+        device: str | int,
+    ) -> dict[str, Any]:
+        job_dir = self._job_dir(job_id)
+        progress_file = job_dir / "progress.json"
+        events_file = job_dir / "events.jsonl"
+        stop_file = job_dir / "stop.txt"
+        error_file = job_dir / "worker_error.txt"
+        log_file = job_dir / "worker.log"
+        for stale in (progress_file, events_file, error_file, stop_file):
+            stale.unlink(missing_ok=True)
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "brailer_monitor.web.detect_worker",
+            "--stream-url",
+            stream_url,
+            "--model",
+            str(model_path),
+            "--output",
+            str(job_dir),
+            "--frame-stride",
+            str(frame_stride),
+            "--confidence",
+            str(confidence),
+            "--imgsz",
+            str(imgsz),
+            "--sam",
+            "yes" if use_sam else "no",
+            "--device",
+            str(device),
+            "--progress-file",
+            str(progress_file),
+            "--events-file",
+            str(events_file),
+            "--stop-file",
+            str(stop_file),
+        ]
+
+        last_progress: dict[str, Any] | None = None
+        events_offset = 0
+        event_manifest = {"frame_stride": frame_stride, "total_frames": 0}
+
+        def _drain_progress() -> None:
+            nonlocal last_progress
+            if not progress_file.exists():
+                return
+            try:
+                prog = json.loads(progress_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return
+            if prog and prog != last_progress:
+                last_progress = prog
+                self._update_detect_progress(
+                    job_id,
+                    int(prog.get("processed", 0)),
+                    int(prog.get("total", 0)),
+                    int(prog.get("with", 0)),
+                )
+
+        def _drain_events() -> None:
+            nonlocal events_offset
+            if not events_file.exists():
+                return
+            try:
+                with events_file.open("rb") as handle:
+                    handle.seek(events_offset)
+                    data = handle.read()
+            except OSError:
+                return
+            if not data:
+                return
+            newline_at = data.rfind(b"\n")
+            if newline_at < 0:
+                return
+            chunk = data[: newline_at + 1]
+            events_offset += len(chunk)
+            changed = False
+            for raw_line in chunk.splitlines():
+                if not raw_line.strip():
+                    continue
+                try:
+                    frame = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                changed = merge_frame_detection(
+                    self._timeline_path,
+                    job_id=job_id,
+                    video_name=video_name,
+                    frame=frame,
+                    manifest=event_manifest,
+                ) > 0 or changed
+            if changed:
+                summary = timeline_summary(self._timeline_path)
+                state = self._load_state()
+                if state.detect_job_id == job_id:
+                    state.detect_timeline_events = summary["event_count"]
+                    state.detect_overlay_job_id = job_id
+                    state.detect_overlay_preview_path = frame.get("preview_path")
+                    state.detect_overlay_frame_index = frame.get("frame_index")
+                    state.detect_overlay_timestamp_sec = frame.get("timestamp_sec")
+                    state.detect_overlay_width = int(frame.get("width") or 0)
+                    state.detect_overlay_height = int(frame.get("height") or 0)
+                    state.detect_overlay_detections = frame.get("detections") or []
+                    state.detect_overlay_updated_at = _now_iso()
+                    self._save_state(state)
+
+        with open(log_file, "w", encoding="utf-8") as log_handle:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(self.config_dir.parent),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+        self._detect_procs[job_id] = proc
+        try:
+            stop_requested_at: float | None = None
+            while proc.poll() is None:
+                if self._detection_cancelled():
+                    stop_file.write_text("stop", encoding="utf-8")
+                    if stop_requested_at is None:
+                        stop_requested_at = time.time()
+                    elif time.time() - stop_requested_at > 20:
+                        self._terminate_process(proc)
+                        raise DetectionCancelled("Detection cancelled by user")
+                _drain_progress()
+                _drain_events()
+                time.sleep(0.5)
+
+            _drain_progress()
+            _drain_events()
+            if proc.returncode != 0:
+                detail = ""
+                if error_file.exists():
+                    detail = error_file.read_text(encoding="utf-8").strip()
+                if not detail and log_file.exists():
+                    detail = log_file.read_text(encoding="utf-8").strip()[-2000:]
+                raise RuntimeError(
+                    detail or f"스트림 탐지 작업이 코드 {proc.returncode}로 종료되었습니다."
+                )
+
+            manifest_path = job_dir / "detections.json"
+            if not manifest_path.exists():
+                raise RuntimeError("스트림 탐지 결과 파일(detections.json)이 생성되지 않았습니다.")
             return json.loads(manifest_path.read_text(encoding="utf-8"))
         finally:
             self._detect_procs.pop(job_id, None)
@@ -1115,6 +1693,8 @@ class DetectPipelineManager:
         model_path: Path,
         frame_stride: int,
         confidence: float,
+        imgsz: int,
+        use_sam: bool,
         device: str | int,
         video_name: str,
     ) -> None:
@@ -1126,14 +1706,43 @@ class DetectPipelineManager:
             planned = self._planned_frame_count(video_path, frame_stride)
             self._update_detect_progress(job_id, 0, planned, 0)
 
-            manifest = self._run_detection_subprocess(
-                job_id,
-                video_path,
-                model_path,
-                frame_stride,
-                confidence,
-                device,
-            )
+            try:
+                manifest = self._run_detection_subprocess(
+                    job_id,
+                    video_path,
+                    video_name,
+                    model_path,
+                    frame_stride,
+                    confidence,
+                    imgsz,
+                    use_sam,
+                    device,
+                )
+            except RuntimeError as exc:
+                if _is_cpu_device(device) or not _is_cuda_oom_error(str(exc)):
+                    raise
+                logger.warning(
+                    "CUDA out of memory for job %s; retrying detection on CPU",
+                    job_id,
+                )
+                state = self._load_state()
+                if state.detect_job_id == job_id:
+                    state.detect_error = "GPU 메모리 부족으로 CPU에서 재시도 중입니다."
+                    state.detect_processed_frames = 0
+                    state.detect_progress_pct = 0.0
+                    self._save_state(state)
+                self._update_detect_progress(job_id, 0, planned, 0)
+                manifest = self._run_detection_subprocess(
+                    job_id,
+                    video_path,
+                    video_name,
+                    model_path,
+                    frame_stride,
+                    confidence,
+                    imgsz,
+                    use_sam,
+                    "cpu",
+                )
             if self._detection_cancelled():
                 raise DetectionCancelled("Detection cancelled by user")
 
@@ -1149,6 +1758,7 @@ class DetectPipelineManager:
                 job_id=job_id,
                 video_name=video_name,
                 manifest=manifest,
+                replace_job=True,
             )
 
             job = self.get_detect_job(job_id)
@@ -1168,7 +1778,7 @@ class DetectPipelineManager:
             state.detect_total_frames = job.total_frames
             state.detect_frames_with_objects = job.frames_with_detections
             state.detect_batch_done = self._batch_done
-            state.detect_timeline_events = summary["segment_count"]
+            state.detect_timeline_events = summary["event_count"]
             self._save_state(state)
 
             self._start_next_queued_or_finish(success=True)
@@ -1206,6 +1816,99 @@ class DetectPipelineManager:
             self._detect_threads.pop(job_id, None)
             self._detect_procs.pop(job_id, None)
 
+    def _run_stream_detection(
+        self,
+        job_id: str,
+        stream_url: str,
+        model_path: Path,
+        frame_stride: int,
+        confidence: float,
+        imgsz: int,
+        use_sam: bool,
+        device: str | int,
+        video_name: str,
+    ) -> None:
+        try:
+            manifest = self._run_stream_detection_subprocess(
+                job_id,
+                stream_url,
+                video_name,
+                model_path,
+                frame_stride,
+                confidence,
+                imgsz,
+                use_sam,
+                device,
+            )
+            manifest["video_name"] = video_name
+            video_start = parse_video_start_time(video_name)
+            if video_start:
+                manifest["video_start"] = video_start.isoformat()
+            manifest_path = self._job_dir(job_id) / "detections.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+            merge_job_manifest(
+                self._timeline_path,
+                job_id=job_id,
+                video_name=video_name,
+                manifest=manifest,
+                replace_job=True,
+            )
+
+            job = self.get_detect_job(job_id)
+            job.status = "completed"
+            job.progress = 1.0
+            job.processed_frames = int(manifest.get("frames_processed", 0))
+            job.total_frames = job.processed_frames
+            job.frames_with_detections = int(manifest.get("frames_with_detections", 0))
+            job.manifest_path = str(manifest_path.resolve())
+            self._save_job(job)
+
+            self._batch_done = 1
+            summary = timeline_summary(self._timeline_path)
+            state = self._load_state()
+            state.detect_status = "completed"
+            state.detect_job_id = job_id
+            state.detect_progress_pct = 1.0
+            state.detect_processed_frames = job.processed_frames
+            state.detect_total_frames = job.total_frames
+            state.detect_frames_with_objects = job.frames_with_detections
+            state.detect_queue_pending = 0
+            state.detect_batch_total = 1
+            state.detect_batch_done = 1
+            state.detect_batch_index = 0
+            state.detect_video_name = None
+            state.detect_timeline_events = summary["event_count"]
+            state.detect_error = None
+            self._save_state(state)
+        except DetectionCancelled:
+            logger.info("Stream detection cancelled for job %s", job_id)
+            job = self.get_detect_job(job_id)
+            job.status = "cancelled"
+            job.error = "사용자가 중지함"
+            self._save_job(job)
+            self._finish_detection_cancelled()
+        except Exception as exc:
+            logger.exception("Stream detection failed for job %s", job_id)
+            job = self.get_detect_job(job_id)
+            job.status = "error"
+            job.error = str(exc)
+            self._save_job(job)
+            self._batch_done = 1
+            self._batch_failed = 1
+            state = self._load_state()
+            state.detect_status = "error"
+            state.detect_error = str(exc)
+            state.detect_batch_done = 1
+            state.detect_queue_pending = 0
+            state.detect_video_name = None
+            state.detect_batch_index = 0
+            self._save_state(state)
+        finally:
+            self._detect_threads.pop(job_id, None)
+            self._detect_procs.pop(job_id, None)
+            self._clear_detection_cancel()
+
     def _start_next_queued_or_finish(self, *, success: bool) -> None:
         next_item: dict[str, Any] | None = None
         with self._lock:
@@ -1216,6 +1919,10 @@ class DetectPipelineManager:
             if self._detect_queue:
                 next_item = self._detect_queue.pop(0)
                 state = self._load_state()
+                state.detect_status = "running"
+                state.detect_job_id = None
+                state.detect_video_name = next_item["video_name"]
+                state.detect_batch_index = int(next_item.get("batch_index") or 0)
                 state.detect_queue_pending = len(self._detect_queue)
                 self._save_state(state)
             else:
@@ -1232,11 +1939,13 @@ class DetectPipelineManager:
                         if self._batch_failed
                         else None
                     )
+                state.detect_video_name = None
+                state.detect_batch_index = 0
                 state.detect_queue_pending = 0
                 state.detect_batch_total = self._batch_total
                 state.detect_batch_done = self._batch_done
                 summary = timeline_summary(self._timeline_path)
-                state.detect_timeline_events = summary["segment_count"]
+                state.detect_timeline_events = summary["event_count"]
                 self._save_state(state)
                 return
 

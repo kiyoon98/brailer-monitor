@@ -60,12 +60,23 @@ class LakeRangeRequest(BaseModel):
     end_hour: int = Field(ge=0, le=23)
     frame_stride: int = Field(default=5, ge=1)
     confidence: float = Field(default=0.6, ge=0.05, le=1.0)
+    imgsz: int = Field(default=416, ge=320, le=1280)
+    use_sam: bool = False
     device: str | int = 0
     check_exists: bool = True
 
 
+class StreamDetectRequest(BaseModel):
+    stream_url: str = Field(default="http://127.0.0.1:8081/live_04.m3u8", min_length=1)
+    frame_stride: int = Field(default=5, ge=1)
+    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
+    imgsz: int = Field(default=416, ge=320, le=1280)
+    use_sam: bool = False
+    device: str | int = 0
+
+
 class TimelineCompactRequest(BaseModel):
-    max_gap_sec: float = Field(default=5.0, ge=0.0, le=60.0)
+    max_gap_sec: float = Field(default=10.0, ge=0.0, le=60.0)
 
 
 class SaveDetectionResultsRequest(BaseModel):
@@ -84,8 +95,8 @@ class AutoDetectRequest(BaseModel):
 
 class TrainRequest(BaseModel):
     epochs: int = Field(default=50, ge=1, le=500)
-    batch: int = Field(default=8, ge=1, le=64)
-    imgsz: int = Field(default=640, ge=320, le=1280)
+    batch: int = Field(default=4, ge=1, le=64)
+    imgsz: int = Field(default=416, ge=320, le=1280)
     device: str | int = 0
 
 
@@ -124,10 +135,21 @@ async def pipeline_dataset_frames(
 
 
 @app.get("/api/pipeline/dataset/preview/{split}/{filename}")
-async def pipeline_dataset_preview(split: str, filename: str) -> Response:
+async def pipeline_dataset_preview(split: str, filename: str, width: int = 0) -> Response:
     try:
         vis = render_dataset_preview(DATASET_ROOT, split, filename)
-        ok, buf = cv2.imencode(".jpg", vis, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        if width > 0:
+            width = max(120, min(width, 1280))
+            height, original_width = vis.shape[:2]
+            if original_width > width:
+                scale = width / original_width
+                vis = cv2.resize(
+                    vis,
+                    (width, max(1, int(height * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+        quality = 78 if width else 88
+        ok, buf = cv2.imencode(".jpg", vis, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         if not ok:
             raise RuntimeError("Failed to encode preview")
         return Response(content=buf.tobytes(), media_type="image/jpeg")
@@ -263,6 +285,16 @@ async def pipeline_model_activate(model_id: str) -> dict:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/pipeline/models/{model_id}/frames")
+async def pipeline_model_frames(model_id: str, limit: int = 48) -> dict:
+    try:
+        return pipeline.model_frames(model_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/pipeline/models/{model_id}/rename")
 async def pipeline_model_rename(model_id: str, body: RenameModelRequest) -> dict:
     try:
@@ -291,6 +323,8 @@ async def pipeline_detect(
     files: list[UploadFile] = File(...),
     frame_stride: int = Form(5),
     confidence: float = Form(0.6),
+    imgsz: int = Form(416),
+    use_sam: bool = Form(False),
     device: str | int = Form(0),
 ) -> dict:
     if not files:
@@ -319,6 +353,8 @@ async def pipeline_detect(
             saved,
             frame_stride=frame_stride,
             confidence=confidence,
+            imgsz=imgsz,
+            use_sam=use_sam,
             device=device,
         )
     except FileNotFoundError as exc:
@@ -414,10 +450,31 @@ async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
             payload,
             frame_stride=body.frame_stride,
             confidence=body.confidence,
+            imgsz=body.imgsz,
+            use_sam=body.use_sam,
             device=body.device,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/pipeline/detect/stream")
+async def pipeline_detect_stream(body: StreamDetectRequest) -> dict:
+    try:
+        return pipeline.start_stream_detection(
+            body.stream_url,
+            frame_stride=body.frame_stride,
+            confidence=body.confidence,
+            imgsz=body.imgsz,
+            use_sam=body.use_sam,
+            device=body.device,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/pipeline/detect/timeline")
@@ -440,7 +497,7 @@ async def pipeline_detect_timeline_reset() -> dict:
 
 @app.post("/api/pipeline/detect/timeline/compact")
 async def pipeline_detect_timeline_compact(body: TimelineCompactRequest | None = None) -> dict:
-    gap = body.max_gap_sec if body is not None else 5.0
+    gap = body.max_gap_sec if body is not None else 10.0
     try:
         return {"timeline": pipeline.compact_timeline(max_gap_sec=gap)}
     except ValueError as exc:

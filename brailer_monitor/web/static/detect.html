@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Brailer YOLO Pipeline</title>
-  <link rel="stylesheet" href="/static/detect.css" />
+  <link rel="stylesheet" href="/static/detect.css?v=3" />
 </head>
 <body>
   <header class="header">
@@ -15,25 +15,12 @@
   </header>
 
   <main class="layout">
-    <section class="panel">
-      <h2>1. CVAT 데이터 Import</h2>
-      <p class="hint">CVAT for video 1.1 (.zip 또는 annotations.xml)</p>
-      <label class="file-label">Annotation 파일
-        <input id="cvatZip" type="file" accept=".zip,.xml" />
-      </label>
-      <label class="file-label">원본 영상 (annotation에 이미지 없을 때 필수)
-        <input id="cvatVideo" type="file" accept="video/*" />
-      </label>
-      <button id="importBtn" type="button">Import</button>
-      <div id="importStatus" class="status"></div>
-      <div id="importLabels" class="label-summary hidden"></div>
-    </section>
-
-    <section class="panel">
-      <h2>2. YOLO 학습</h2>
+    <section class="panel full">
+      <h2>1. YOLO 학습</h2>
       <div class="row">
         <label>Epochs <input id="epochs" type="number" value="50" min="1" /></label>
-        <label>Batch <input id="batch" type="number" value="8" min="1" /></label>
+        <label>Batch <input id="batch" type="number" value="4" min="1" /></label>
+        <label>학습 크기 <input id="trainImgsz" type="number" value="416" min="320" max="1280" step="32" /></label>
       </div>
       <div class="row train-actions">
         <button id="trainBtn" type="button" disabled>학습 시작</button>
@@ -54,15 +41,24 @@
         </div>
         <p class="hint">학습할 때마다 모델이 자동 저장됩니다. 원하는 모델을 선택하면 탐지에 사용됩니다.</p>
         <div id="modelList" class="model-list"></div>
+        <div id="modelFramePanel" class="model-frame-panel hidden">
+          <div class="model-frame-head">
+            <strong id="modelFrameTitle">모델 학습 프레임</strong>
+            <span id="modelFrameStatus" class="hint"></span>
+          </div>
+          <div id="modelFrameResults" class="model-frame-results"></div>
+          <button id="modelFrameMore" type="button" class="secondary small hidden">더 보기</button>
+        </div>
       </div>
     </section>
 
     <section class="panel full">
-      <h2>3. 비디오 탐지</h2>
+      <h2>2. 비디오 탐지</h2>
       <p class="hint">파일명: <code>{접두어}_YYMMDD_HHMMSS.mp4</code> — YYMMDD·HHMM이 5분 구간 시작 시각 (끝 2자리는 파일별 접미사)</p>
       <div class="detect-source">
         <label><input type="radio" name="detectSource" value="upload" checked /> 파일 업로드</label>
         <label><input type="radio" name="detectSource" value="lake" /> Lake 저장소 (내부 네트워크)</label>
+        <label><input type="radio" name="detectSource" value="stream" /> 실시간 스트림</label>
       </div>
       <div id="detectUploadSection">
         <label class="file-label">비디오 (여러 파일 선택 가능)
@@ -92,9 +88,23 @@
         <button id="lakeDiscoverBtn" type="button" class="secondary">영상 확인</button>
         <div id="lakeDiscoverStatus" class="status"></div>
       </div>
+      <div id="detectStreamSection" class="hidden">
+        <label>스트림 주소
+          <input id="streamUrl" type="text" value="http://127.0.0.1:8081/live_04.m3u8" />
+        </label>
+        <div class="stream-preview">
+          <video id="streamPreview" controls muted playsinline></video>
+          <img id="streamDetectFrameOverlay" class="stream-detect-frame-overlay hidden" alt="" />
+          <canvas id="streamDetectOverlay" class="stream-detect-overlay hidden"></canvas>
+          <div id="streamDetectOverlayStatus" class="stream-detect-overlay-status hidden"></div>
+        </div>
+        <p id="streamPreviewStatus" class="hint"></p>
+      </div>
       <div class="row">
         <label>프레임 간격 <input id="frameStride" type="number" value="5" min="1" /></label>
         <label>Confidence <input id="confidence" type="number" value="0.6" min="0.05" max="1" step="0.05" /></label>
+        <label>추론 크기 <input id="detectImgsz" type="number" value="416" min="320" max="1280" step="32" /></label>
+        <label><input id="useSam" type="checkbox" /> 정밀 마스크(SAM)</label>
       </div>
       <div class="row detect-actions">
         <button id="detectBtn" type="button" disabled>탐지 시작</button>
@@ -108,26 +118,6 @@
       <div id="detectStatus" class="status"></div>
     </section>
 
-    <section id="importFramePanel" class="panel full collapsible collapsed hidden">
-      <button id="importFrameToggle" type="button" class="panel-toggle" aria-expanded="false">
-        <span class="panel-toggle-title">Import된 프레임 <span id="importFrameCount" class="badge">0</span></span>
-        <span id="importFrameToggleIcon" class="toggle-icon">▶</span>
-      </button>
-      <div id="importFrameBody" class="collapsible-body hidden">
-        <div class="panel-head">
-          <label class="split-filter">Split
-            <select id="importFrameSplit">
-              <option value="all">전체</option>
-              <option value="train">train</option>
-              <option value="val">val</option>
-            </select>
-          </label>
-        </div>
-        <div id="importFrameResults" class="frame-results"></div>
-        <button id="importFrameMore" type="button" class="secondary hidden">더 보기</button>
-      </div>
-    </section>
-
     <section class="panel full">
       <h2>탐지 타임라인 <span id="frameCount" class="badge">0</span></h2>
       <p class="timeline-legend hint">백분율 = YOLO 신뢰도 · 면적 = 탐지 픽셀 수 · 썸네일 클릭: 확대 · 더블클릭: 세그먼트 전체</p>
@@ -137,7 +127,7 @@
         <select id="savedResultSelect" class="saved-result-select"></select>
         <button id="loadResultBtn" type="button" class="secondary">저장 결과 열기</button>
         <span id="savedResultStatus" class="hint"></span>
-        <button id="compactTimelineBtn" type="button" class="secondary">5초 이내 구간 합치기</button>
+        <button id="compactTimelineBtn" type="button" class="secondary">10초 이내 구간 합치기</button>
         <span id="compactTimelineStatus" class="hint"></span>
         <button id="generateReportBtn" type="button" class="secondary">외부 문서 생성</button>
         <span id="reportStatus" class="hint"></span>
@@ -165,6 +155,40 @@
       </div>
       <div id="frameResults" class="timeline-segment-list"></div>
       <button id="detectFrameMore" type="button" class="secondary hidden">더 보기</button>
+    </section>
+
+    <section class="panel full">
+      <h2>CVAT 데이터 Import</h2>
+      <p class="hint">CVAT for video 1.1 (.zip 또는 annotations.xml)</p>
+      <label class="file-label">Annotation 파일
+        <input id="cvatZip" type="file" accept=".zip,.xml" />
+      </label>
+      <label class="file-label">원본 영상 (annotation에 이미지 없을 때 필수)
+        <input id="cvatVideo" type="file" accept="video/*" />
+      </label>
+      <button id="importBtn" type="button">Import</button>
+      <div id="importStatus" class="status"></div>
+      <div id="importLabels" class="label-summary hidden"></div>
+    </section>
+
+    <section id="importFramePanel" class="panel full collapsible collapsed hidden">
+      <button id="importFrameToggle" type="button" class="panel-toggle" aria-expanded="false">
+        <span class="panel-toggle-title">Import된 프레임 <span id="importFrameCount" class="badge">0</span></span>
+        <span id="importFrameToggleIcon" class="toggle-icon">▶</span>
+      </button>
+      <div id="importFrameBody" class="collapsible-body hidden">
+        <div class="panel-head">
+          <label class="split-filter">Split
+            <select id="importFrameSplit">
+              <option value="all">전체</option>
+              <option value="train">train</option>
+              <option value="val">val</option>
+            </select>
+          </label>
+        </div>
+        <div id="importFrameResults" class="frame-results"></div>
+        <button id="importFrameMore" type="button" class="secondary hidden">더 보기</button>
+      </div>
     </section>
   </main>
 
@@ -195,6 +219,7 @@
     </div>
   </div>
 
-  <script src="/static/detect.js?v=44"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+  <script src="/static/detect.js?v=61"></script>
 </body>
 </html>

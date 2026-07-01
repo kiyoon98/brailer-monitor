@@ -11,7 +11,9 @@ from brailer_monitor.detect_timeline import (
     compact_timeline_segments,
     detection_area_px,
     get_segment_frames,
+    load_timeline,
     list_timeline,
+    merge_frame_detection,
     merge_job_manifest,
     reset_timeline,
     timeline_range,
@@ -19,6 +21,19 @@ from brailer_monitor.detect_timeline import (
 
 
 class DetectTimelineTests(unittest.TestCase):
+    def test_load_timeline_ignores_stale_trailing_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            path.write_text(
+                '{"updated_at": "now", "videos": [], "events": []}  }\\n  ]\\n}',
+                encoding="utf-8",
+            )
+
+            timeline = load_timeline(path)
+
+            self.assertEqual(timeline["videos"], [])
+            self.assertEqual(timeline["events"], [])
+
     def test_merge_and_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"
@@ -55,6 +70,64 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(video["duration_sec"], 30.0)
             reset_timeline(path)
             self.assertEqual(list_timeline(path)["total"], 0)
+
+    def test_incremental_frame_merge_is_replaced_by_final_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            frame = {
+                "frame_index": 20,
+                "timestamp_sec": 30.0,
+                "detections": [{"class_name": "brailer", "confidence": 0.9}],
+                "preview_path": "frame_000020.jpg",
+            }
+            manifest_meta = {
+                "fps": 30.0,
+                "total_frames": 900,
+                "frame_stride": 5,
+                "frames_processed": 1,
+                "frames_with_detections": 1,
+            }
+
+            added = merge_frame_detection(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                frame=frame,
+                manifest=manifest_meta,
+            )
+            duplicate = merge_frame_detection(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                frame=frame,
+                manifest=manifest_meta,
+            )
+
+            self.assertEqual(added, 1)
+            self.assertEqual(duplicate, 0)
+            timeline = load_timeline(path)
+            self.assertEqual(len(timeline["events"]), 1)
+            self.assertEqual(len(timeline["videos"]), 1)
+
+            manifest = {
+                **manifest_meta,
+                "frames": [
+                    {"frame_index": 10, "timestamp_sec": 15.0, "detections": [], "preview_path": None},
+                    frame,
+                ],
+            }
+            final_added = merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+                replace_job=True,
+            )
+
+            timeline = load_timeline(path)
+            self.assertEqual(final_added, 1)
+            self.assertEqual(len(timeline["events"]), 1)
+            self.assertEqual(len(timeline["videos"]), 1)
 
     def test_merge_consecutive_frames_into_one_segment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,7 +173,7 @@ class DetectTimelineTests(unittest.TestCase):
             detail = get_segment_frames(path, segments[0]["segment_id"])
             self.assertEqual(len(detail["frames"]), 2)
 
-    def test_compact_segments_merges_gaps_up_to_five_seconds(self) -> None:
+    def test_compact_segments_merges_gaps_up_to_ten_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"
             manifest = {
@@ -138,15 +211,15 @@ class DetectTimelineTests(unittest.TestCase):
             )
             self.assertEqual(len(build_segments(__import__("json").loads(path.read_text(encoding="utf-8")))), 3)
 
-            result = compact_timeline_segments(path, max_gap_sec=5)
+            result = compact_timeline_segments(path, max_gap_sec=10)
             self.assertEqual(result["before_segment_count"], 3)
-            self.assertEqual(result["segment_count"], 2)
-            self.assertEqual(result["merged_segment_count"], 1)
+            self.assertEqual(result["segment_count"], 1)
+            self.assertEqual(result["merged_segment_count"], 2)
 
             listed = list_timeline(path)
-            self.assertEqual(listed["total"], 2)
-            self.assertEqual(listed["segment_merge_gap_sec"], 5.0)
-            self.assertEqual(listed["segments"][0]["frame_count"], 2)
+            self.assertEqual(listed["total"], 1)
+            self.assertEqual(listed["segment_merge_gap_sec"], 10.0)
+            self.assertEqual(listed["segments"][0]["frame_count"], 3)
 
     def test_timeline_range_from_video_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
