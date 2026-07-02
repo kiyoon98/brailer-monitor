@@ -48,6 +48,11 @@ class Detection:
     class_name: str
     mask: np.ndarray | None = None
     track_id: int | None = None
+    model_id: str | None = None
+    model_name: str | None = None
+    model_path: str | None = None
+    ensemble_model_ids: tuple[str, ...] = ()
+    ensemble_model_names: tuple[str, ...] = ()
 
 
 class BrailerDetector:

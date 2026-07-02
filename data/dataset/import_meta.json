@@ -1,6 +1,6 @@
 {
-  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/lake_win_04_260128_2130.zip",
-  "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/JJR-102283_stream04_260128_213016.mp4",
+  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/annotations.xml",
+  "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/JJR-102283_stream04_260128_052516.mp4",
   "frame_source": "video",
   "task_type": "segment",
   "class_names": [
@@ -13,19 +13,19 @@
     "objects": [
       {
         "name": "brailer",
-        "color": "#ff00cc",
+        "color": "#fa7dbb",
         "cvat_type": "any",
-        "annotation_count": 75,
+        "annotation_count": 148,
         "box_count": 0,
-        "polygon_count": 75,
-        "frame_count": 75
+        "polygon_count": 148,
+        "frame_count": 148
       }
     ],
-    "total_annotations": 75,
-    "annotated_frames": 75,
+    "total_annotations": 148,
+    "annotated_frames": 148,
     "task_type": "segment"
   },
-  "train_images": 60,
-  "val_images": 15,
-  "total_annotations": 75
+  "train_images": 119,
+  "val_images": 29,
+  "total_annotations": 148
 }

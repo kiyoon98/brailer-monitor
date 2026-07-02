@@ -65,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Isolated single-video detection worker")
     parser.add_argument("--video")
     parser.add_argument("--stream-url")
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model", action="append")
+    parser.add_argument("--model-specs-file")
     parser.add_argument("--output", required=True)
     parser.add_argument("--frame-stride", type=int, default=5)
     parser.add_argument("--confidence", type=float, default=0.6)
@@ -91,6 +92,13 @@ def main(argv: list[str] | None = None) -> int:
 
     use_segmentation = None if args.segmentation == "auto" else args.segmentation == "yes"
     use_sam = args.sam == "yes"
+    model_specs = None
+    if args.model_specs_file:
+        model_specs = json.loads(Path(args.model_specs_file).read_text(encoding="utf-8"))
+    model_paths = [Path(path) for path in (args.model or [])]
+    if not model_specs and not model_paths:
+        parser.error("--model or --model-specs-file is required")
+    primary_model = model_paths[0] if model_paths else Path(str(model_specs[0]["path"]))
 
     def on_progress(processed: int, total: int, with_det: int) -> None:
         _write_progress(progress_file, processed, total, with_det)
@@ -124,8 +132,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.stream_url:
             detect_stream(
                 args.stream_url,
-                Path(args.model),
+                primary_model,
                 output_dir=output_dir,
+                model_specs=model_specs,
                 frame_stride=args.frame_stride,
                 confidence=args.confidence,
                 imgsz=args.imgsz,
@@ -141,8 +150,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             detect_video(
                 Path(args.video),
-                Path(args.model),
+                primary_model,
                 output_dir=output_dir,
+                model_specs=model_specs,
                 frame_stride=args.frame_stride,
                 confidence=args.confidence,
                 imgsz=args.imgsz,
@@ -170,8 +180,9 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             detect_video(
                 Path(args.video),
-                Path(args.model),
+                primary_model,
                 output_dir=output_dir,
+                model_specs=model_specs,
                 frame_stride=args.frame_stride,
                 confidence=args.confidence,
                 imgsz=args.imgsz,

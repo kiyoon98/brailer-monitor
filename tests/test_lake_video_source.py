@@ -175,6 +175,7 @@ class LakeVideoSourceTests(unittest.TestCase):
         spec = {
             "base_host": "http://example.invalid/media/",
             "minute_slots": [0, 30],
+            "minute_offsets": [0],
             "components": {
                 "media": {"default": "lake_win", "options": ["lake_win", "lake_aurora"]},
                 "year_folder": {"default": "2026_decrypted", "options": ["2025_decrypted", "2026_decrypted"]},
@@ -197,8 +198,52 @@ class LakeVideoSourceTests(unittest.TestCase):
         self.assertEqual(config.base_url, "http://example.invalid/media/lake_aurora/2025_decrypted/")
         self.assertEqual(config.file_prefix, "LAKE_AURORA_stream03")
         self.assertEqual(config.year, 2025)
-        self.assertEqual(config.minute_slots, (0, 30))
-        self.assertEqual(config.second_suffixes, ("16", "23"))
+        self.assertEqual(config.minute_slots, (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55))
+        self.assertEqual(config.second_suffixes, ("16",))
+
+    def test_component_selection_can_override_minute_offset_and_suffixes(self) -> None:
+        spec = {
+            "base_host": "http://example.invalid/media/",
+            "minute_slots": [0, 5, 10],
+            "minute_offsets": [0, 1, 2, 3, 4],
+            "components": {
+                "media": {"default": "lake_win", "options": ["lake_win"]},
+                "year_folder": {"default": "2026_decrypted", "options": ["2026_decrypted"]},
+                "vessel": {"default": "JJR-131066", "options": ["JJR-131066"]},
+                "stream": {"default": "stream04", "options": ["stream04"]},
+                "suffix": {"default": "16", "options": ["16"]},
+            },
+        }
+
+        config = build_lake_config_from_selection(
+            {
+                "minute_offsets": [2],
+                "second_suffixes": ["7", "16"],
+            },
+            spec=spec,
+        )
+
+        self.assertEqual(config.file_prefix, "JJR-131066_stream04")
+        self.assertEqual(config.minute_slots, (2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57))
+        self.assertEqual(config.second_suffixes, ("07", "16"))
+
+    def test_component_selection_can_still_accept_explicit_minute_slots(self) -> None:
+        spec = {
+            "base_host": "http://example.invalid/media/",
+            "minute_slots": [0, 5, 10],
+            "minute_offsets": [0, 1, 2, 3, 4],
+            "components": {
+                "media": {"default": "lake_win", "options": ["lake_win"]},
+                "year_folder": {"default": "2026_decrypted", "options": ["2026_decrypted"]},
+                "vessel": {"default": "JJR-131066", "options": ["JJR-131066"]},
+                "stream": {"default": "stream04", "options": ["stream04"]},
+                "suffix": {"default": "16", "options": ["16"]},
+            },
+        }
+
+        config = build_lake_config_from_selection({"minute_slots": [0, 1, 2, 3, 4]}, spec=spec)
+
+        self.assertEqual(config.minute_slots, (0, 1, 2, 3, 4))
 
     def test_component_selection_rejects_unknown_values(self) -> None:
         spec = {

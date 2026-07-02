@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..cvat_import import import_cvat
-from ..dataset_preview import list_dataset_frames
+from ..dataset_preview import list_dataset_frames, render_dataset_preview
 from ..detect_timeline import (
     compact_timeline_segments,
     get_segment_frames,
@@ -283,16 +283,20 @@ class DetectPipelineManager:
                 or meta.get("label_summary", {}).get("class_names")
                 or []
             )
-            return self.model_library.register(
+            record = self.model_library.register(
                 weights,
                 task_type=task_type,
                 epochs=epochs,
                 class_names=class_names,
                 train_images=int(meta.get("train_images", 0) or 0),
                 val_images=int(meta.get("val_images", 0) or 0),
-                dataset_frames=self._dataset_frame_samples(limit=48),
+                dataset_frames=[],
                 source="train",
             )
+            dataset_frames = self._snapshot_dataset_frame_samples(record.id, limit=48)
+            if dataset_frames:
+                record = self.model_library.update_dataset_frames(record.id, dataset_frames)
+            return record
         except Exception:
             logger.exception("Failed to register trained model into library")
             return None
@@ -304,6 +308,51 @@ class DetectPipelineManager:
             logger.exception("Failed to collect dataset frame samples")
             return []
         return list(result.get("frames") or [])
+
+    def _snapshot_dataset_frame_samples(self, model_id: str, *, limit: int = 48) -> list[dict[str, Any]]:
+        try:
+            result = list_dataset_frames(
+                self.dataset_root,
+                split="all",
+                offset=0,
+                limit=limit,
+                include_geometry=True,
+            )
+        except Exception:
+            logger.exception("Failed to collect dataset frame samples")
+            return []
+
+        preview_root = self.model_library.model_dir(model_id) / "previews"
+        frames = list(result.get("frames") or [])
+        for frame in frames:
+            split = str(frame.get("split") or "")
+            image_name = str(frame.get("image_name") or "")
+            if split not in {"train", "val"} or not image_name or "/" in image_name or "\\" in image_name:
+                continue
+            try:
+                import cv2
+
+                preview = render_dataset_preview(self.dataset_root, split, image_name)
+                preview_dir = preview_root / split
+                preview_dir.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(preview_dir / image_name), preview)
+                frame["preview_url"] = f"/api/pipeline/models/{model_id}/preview/{split}/{image_name}"
+            except Exception:
+                logger.exception("Failed to snapshot dataset preview for model %s: %s/%s", model_id, split, image_name)
+        return frames
+
+    def resolve_model_preview(self, model_id: str, split: str, filename: str) -> Path:
+        if split not in {"train", "val"}:
+            raise ValueError(f"Invalid split: {split}")
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            raise ValueError("Invalid filename")
+        root = (self.model_library.model_dir(model_id) / "previews" / split).resolve()
+        path = (root / filename).resolve()
+        if not str(path).startswith(str(root)):
+            raise ValueError("Invalid image path")
+        if not path.exists():
+            raise FileNotFoundError(f"Model preview not found: {filename}")
+        return path
 
     def list_models(self) -> dict[str, Any]:
         state = self._load_state()
@@ -382,6 +431,64 @@ class DetectPipelineManager:
             return Path(state.train_weights)
         return None
 
+    def _detection_model_specs(
+        self,
+        state: PipelineState,
+        *,
+        model_path: Path | None = None,
+        model_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        specs: list[dict[str, Any]] = []
+        for model_id in model_ids or []:
+            record = self.model_library.get(model_id)
+            weights = Path(record.weights_path)
+            if not weights.exists():
+                raise FileNotFoundError(f"모델 가중치 파일이 없습니다: {weights}")
+            specs.append(
+                {
+                    "id": record.id,
+                    "name": record.name,
+                    "path": str(weights.resolve()),
+                    "task_type": record.task_type,
+                }
+            )
+        if specs:
+            return specs
+
+        if model_path is None:
+            model_path = self._active_weights(state)
+        if model_path is None:
+            task = load_task_type(self.dataset_root)
+            model_path = Path("models/brailer_detect.pt" if task == "detect" else "models/brailer_seg.pt")
+        if not model_path.exists():
+            raise FileNotFoundError(
+                "학습된 모델이 없습니다. 먼저 학습하거나 모델 라이브러리에서 모델을 선택하세요."
+            )
+
+        active_id = state.active_model_id if self.model_library.exists(state.active_model_id) else None
+        if active_id and Path(self.model_library.weights_path(active_id)).resolve() == model_path.resolve():
+            record = self.model_library.get(active_id)
+            return [
+                {
+                    "id": record.id,
+                    "name": record.name,
+                    "path": str(model_path.resolve()),
+                    "task_type": record.task_type,
+                }
+            ]
+        return [{"id": "model_1", "name": model_path.stem, "path": str(model_path.resolve())}]
+
+    @staticmethod
+    def _clear_detect_overlay(state: PipelineState) -> None:
+        state.detect_overlay_job_id = None
+        state.detect_overlay_preview_path = None
+        state.detect_overlay_frame_index = None
+        state.detect_overlay_timestamp_sec = None
+        state.detect_overlay_width = 0
+        state.detect_overlay_height = 0
+        state.detect_overlay_detections = None
+        state.detect_overlay_updated_at = None
+
     def _finish_detection_cancelled(self) -> None:
         state = self._load_state()
         state.detect_status = "cancelled"
@@ -394,6 +501,7 @@ class DetectPipelineManager:
         state.detect_batch_done = self._batch_done
         summary = timeline_summary(self._timeline_path)
         state.detect_timeline_events = summary["event_count"]
+        self._clear_detect_overlay(state)
         self._save_state(state)
 
     def _recover_stale_cancel(self) -> None:
@@ -425,6 +533,7 @@ class DetectPipelineManager:
         state.detect_batch_done = self._batch_done
         summary = timeline_summary(self._timeline_path)
         state.detect_timeline_events = summary["event_count"]
+        self._clear_detect_overlay(state)
         self._save_state(state)
 
     def _recover_stale_detect(self) -> None:
@@ -602,9 +711,12 @@ class DetectPipelineManager:
     def _save_state(self, state: PipelineState) -> None:
         state.updated_at = _now_iso()
         payload = json.dumps(state.to_dict(), indent=2, ensure_ascii=False)
-        temp_path = self._state_path.with_suffix(".json.tmp")
-        temp_path.write_text(payload, encoding="utf-8")
-        temp_path.replace(self._state_path)
+        temp_path = self._state_path.with_name(f"{self._state_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(payload, encoding="utf-8")
+            temp_path.replace(self._state_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def get_state(self) -> dict[str, Any]:
         self._recover_stale_cancel()
@@ -771,6 +883,7 @@ class DetectPipelineManager:
                 state.detect_video_name = None
                 state.detect_batch_index = 0
                 state.detect_queue_pending = 0
+                self._clear_detect_overlay(state)
                 self._save_state(state)
             except Exception:
                 if self._timeline_path.exists():
@@ -956,6 +1069,7 @@ class DetectPipelineManager:
         video_name: str,
         *,
         model_path: Path | None = None,
+        model_ids: list[str] | None = None,
         frame_stride: int = 5,
         confidence: float = 0.6,
         imgsz: int = 416,
@@ -965,6 +1079,7 @@ class DetectPipelineManager:
         return self.start_detection_batch(
             [{"video_path": video_path, "video_name": video_name}],
             model_path=model_path,
+            model_ids=model_ids,
             frame_stride=frame_stride,
             confidence=confidence,
             imgsz=imgsz,
@@ -993,6 +1108,7 @@ class DetectPipelineManager:
         videos: list[dict[str, Any]],
         *,
         model_path: Path | None = None,
+        model_ids: list[str] | None = None,
         frame_stride: int = 5,
         confidence: float = 0.6,
         imgsz: int = 416,
@@ -1003,16 +1119,7 @@ class DetectPipelineManager:
             raise ValueError("No videos provided")
 
         state = self._load_state()
-        if model_path is None:
-            model_path = self._active_weights(state)
-        if model_path is None:
-            task = load_task_type(self.dataset_root)
-            default = Path("models/brailer_detect.pt" if task == "detect" else "models/brailer_seg.pt")
-            model_path = default
-        if not model_path.exists():
-            raise FileNotFoundError(
-                "학습된 모델이 없습니다. 먼저 학습하거나 모델 라이브러리에서 모델을 선택하세요."
-            )
+        model_specs = self._detection_model_specs(state, model_path=model_path, model_ids=model_ids)
 
         self._clear_detection_cancel()
         self._recover_stale_detect()
@@ -1043,7 +1150,8 @@ class DetectPipelineManager:
             for index, prepared in enumerate(prepared_videos):
                 item = {
                     "video_name": prepared["video_name"],
-                    "model_path": model_path,
+                    "model_path": Path(model_specs[0]["path"]),
+                    "model_specs": model_specs,
                     "frame_stride": frame_stride,
                     "confidence": confidence,
                     "imgsz": imgsz,
@@ -1089,6 +1197,7 @@ class DetectPipelineManager:
                     state.detect_job_id = None
                     state.detect_video_name = None
                     state.detect_batch_index = 0
+                    self._clear_detect_overlay(state)
                     self._save_state(state)
                 queued_jobs[0] = {
                     "video_name": first_item["video_name"],
@@ -1125,6 +1234,7 @@ class DetectPipelineManager:
         stream_url: str,
         *,
         model_path: Path | None = None,
+        model_ids: list[str] | None = None,
         frame_stride: int = 5,
         confidence: float = 0.6,
         imgsz: int = 416,
@@ -1136,15 +1246,8 @@ class DetectPipelineManager:
             raise ValueError("스트림 주소를 입력하세요.")
 
         state = self._load_state()
-        if model_path is None:
-            model_path = self._active_weights(state)
-        if model_path is None:
-            task = load_task_type(self.dataset_root)
-            model_path = Path("models/brailer_detect.pt" if task == "detect" else "models/brailer_seg.pt")
-        if not model_path.exists():
-            raise FileNotFoundError(
-                "학습된 모델이 없습니다. 먼저 학습하거나 모델 라이브러리에서 모델을 선택하세요."
-            )
+        model_specs = self._detection_model_specs(state, model_path=model_path, model_ids=model_ids)
+        model_path = Path(model_specs[0]["path"])
 
         self._recover_stale_detect()
         state = self._load_state()
@@ -1175,6 +1278,7 @@ class DetectPipelineManager:
             "video_name": video_name,
             "video_start": parse_video_start_time(video_name).isoformat(),
             "stream_url": stream_url,
+            "models": model_specs,
         }
         (directory / "video_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -1202,7 +1306,7 @@ class DetectPipelineManager:
 
         thread = threading.Thread(
             target=self._run_stream_detection,
-            args=(job_id, stream_url, model_path, frame_stride, confidence, imgsz, use_sam, device, video_name),
+            args=(job_id, stream_url, model_path, model_specs, frame_stride, confidence, imgsz, use_sam, device, video_name),
             daemon=True,
         )
         self._detect_threads[job_id] = thread
@@ -1219,6 +1323,7 @@ class DetectPipelineManager:
     def _launch_detection(self, item: dict[str, Any]) -> DetectJob:
         video_name: str = item["video_name"]
         model_path: Path = item["model_path"]
+        model_specs: list[dict[str, Any]] = list(item.get("model_specs") or [{"path": str(model_path)}])
         frame_stride: int = item["frame_stride"]
         confidence: float = item["confidence"]
         imgsz: int = int(item.get("imgsz") or 416)
@@ -1277,6 +1382,7 @@ class DetectPipelineManager:
         meta = {
             "video_name": video_name,
             "video_start": video_start.isoformat() if video_start else None,
+            "models": model_specs,
         }
         (directory / "video_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -1313,7 +1419,7 @@ class DetectPipelineManager:
 
         thread = threading.Thread(
             target=self._run_detection,
-            args=(job_id, target_video, model_path, frame_stride, confidence, imgsz, use_sam, device, video_name),
+            args=(job_id, target_video, model_path, model_specs, frame_stride, confidence, imgsz, use_sam, device, video_name),
             daemon=True,
         )
         self._detect_threads[job_id] = thread
@@ -1362,6 +1468,7 @@ class DetectPipelineManager:
         video_path: Path,
         video_name: str,
         model_path: Path,
+        model_specs: list[dict[str, Any]],
         frame_stride: int,
         confidence: float,
         imgsz: int,
@@ -1377,6 +1484,8 @@ class DetectPipelineManager:
         log_file = job_dir / "worker.log"
         for stale in (progress_file, events_file, error_file):
             stale.unlink(missing_ok=True)
+        model_specs_file = job_dir / "model_specs.json"
+        model_specs_file.write_text(json.dumps(model_specs, ensure_ascii=False, indent=2), encoding="utf-8")
 
         cmd = [
             sys.executable,
@@ -1386,6 +1495,8 @@ class DetectPipelineManager:
             str(video_path),
             "--model",
             str(model_path),
+            "--model-specs-file",
+            str(model_specs_file),
             "--output",
             str(job_dir),
             "--frame-stride",
@@ -1520,6 +1631,7 @@ class DetectPipelineManager:
         stream_url: str,
         video_name: str,
         model_path: Path,
+        model_specs: list[dict[str, Any]],
         frame_stride: int,
         confidence: float,
         imgsz: int,
@@ -1534,6 +1646,8 @@ class DetectPipelineManager:
         log_file = job_dir / "worker.log"
         for stale in (progress_file, events_file, error_file, stop_file):
             stale.unlink(missing_ok=True)
+        model_specs_file = job_dir / "model_specs.json"
+        model_specs_file.write_text(json.dumps(model_specs, ensure_ascii=False, indent=2), encoding="utf-8")
 
         cmd = [
             sys.executable,
@@ -1543,6 +1657,8 @@ class DetectPipelineManager:
             stream_url,
             "--model",
             str(model_path),
+            "--model-specs-file",
+            str(model_specs_file),
             "--output",
             str(job_dir),
             "--frame-stride",
@@ -1691,6 +1807,7 @@ class DetectPipelineManager:
         job_id: str,
         video_path: Path,
         model_path: Path,
+        model_specs: list[dict[str, Any]],
         frame_stride: int,
         confidence: float,
         imgsz: int,
@@ -1712,6 +1829,7 @@ class DetectPipelineManager:
                     video_path,
                     video_name,
                     model_path,
+                    model_specs,
                     frame_stride,
                     confidence,
                     imgsz,
@@ -1737,6 +1855,7 @@ class DetectPipelineManager:
                     video_path,
                     video_name,
                     model_path,
+                    model_specs,
                     frame_stride,
                     confidence,
                     imgsz,
@@ -1821,6 +1940,7 @@ class DetectPipelineManager:
         job_id: str,
         stream_url: str,
         model_path: Path,
+        model_specs: list[dict[str, Any]],
         frame_stride: int,
         confidence: float,
         imgsz: int,
@@ -1834,6 +1954,7 @@ class DetectPipelineManager:
                 stream_url,
                 video_name,
                 model_path,
+                model_specs,
                 frame_stride,
                 confidence,
                 imgsz,
@@ -1880,6 +2001,7 @@ class DetectPipelineManager:
             state.detect_video_name = None
             state.detect_timeline_events = summary["event_count"]
             state.detect_error = None
+            self._clear_detect_overlay(state)
             self._save_state(state)
         except DetectionCancelled:
             logger.info("Stream detection cancelled for job %s", job_id)
@@ -1903,6 +2025,7 @@ class DetectPipelineManager:
             state.detect_queue_pending = 0
             state.detect_video_name = None
             state.detect_batch_index = 0
+            self._clear_detect_overlay(state)
             self._save_state(state)
         finally:
             self._detect_threads.pop(job_id, None)
@@ -1946,6 +2069,7 @@ class DetectPipelineManager:
                 state.detect_batch_done = self._batch_done
                 summary = timeline_summary(self._timeline_path)
                 state.detect_timeline_events = summary["event_count"]
+                self._clear_detect_overlay(state)
                 self._save_state(state)
                 return
 

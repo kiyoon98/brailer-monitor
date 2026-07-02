@@ -30,6 +30,8 @@ const els = {
   lakeYearFolder: document.getElementById("lakeYearFolder"),
   lakeVessel: document.getElementById("lakeVessel"),
   lakeStream: document.getElementById("lakeStream"),
+  lakeMinuteOffsets: document.getElementById("lakeMinuteOffsets"),
+  lakeSecondSuffixes: document.getElementById("lakeSecondSuffixes"),
   lakeUrlPreview: document.getElementById("lakeUrlPreview"),
   lakeStartMonth: document.getElementById("lakeStartMonth"),
   lakeStartDay: document.getElementById("lakeStartDay"),
@@ -115,6 +117,7 @@ const TIMELINE_ZOOM_STEP = 1.35;
 const FRAME_VIEWER_ZOOM_MIN = 1;
 const FRAME_VIEWER_ZOOM_MAX = 8;
 const FRAME_VIEWER_ZOOM_STEP = 1.2;
+const LAKE_DISCOVER_TIMEOUT_MS = 45000;
 
 let lightboxSegment = null;
 let lightboxFrames = [];
@@ -150,6 +153,8 @@ let detectSession = 0;
 let detectSessionActive = false;
 let detectStopRequested = false;
 let modelListKey = "";
+let selectedModelIds = new Set();
+let modelSelectionTouched = false;
 let modelFrameFrames = [];
 let modelFrameVisible = 0;
 let streamHls = null;
@@ -180,12 +185,25 @@ function formatModelSize(bytes) {
   return `${(n / 1000).toFixed(0)}KB`;
 }
 
+function selectedDetectionModelIds() {
+  const available = new Set((lastPipelineState?.models || []).map((model) => model.id));
+  return [...selectedModelIds].filter((id) => !available.size || available.has(id));
+}
+
 function renderModels(models, activeId) {
   if (!els.modelList) return;
   const list = Array.isArray(models) ? models : [];
   if (els.modelCount) els.modelCount.textContent = String(list.length);
 
-  const key = JSON.stringify(list.map((m) => [m.id, m.name, m.id === activeId]));
+  const availableIds = new Set(list.map((model) => model.id));
+  selectedModelIds = new Set([...selectedModelIds].filter((id) => availableIds.has(id)));
+  if (!selectedModelIds.size && !modelSelectionTouched && list.length) {
+    const fallbackId = availableIds.has(activeId) ? activeId : list[0].id;
+    if (fallbackId) selectedModelIds.add(fallbackId);
+  }
+
+  const selectedKey = [...selectedModelIds].sort().join(",");
+  const key = JSON.stringify(list.map((m) => [m.id, m.name, m.id === activeId, selectedModelIds.has(m.id), selectedKey]));
   if (key === modelListKey) return;
   modelListKey = key;
 
@@ -198,6 +216,7 @@ function renderModels(models, activeId) {
   els.modelList.innerHTML = list
     .map((m) => {
       const isActive = m.id === activeId;
+      const selected = selectedModelIds.has(m.id);
       const classes = (m.class_names || []).join(", ") || "-";
       const size = formatModelSize(m.size_bytes);
       const metaParts = [
@@ -212,11 +231,16 @@ function renderModels(models, activeId) {
           <div class="model-item-main">
             <div class="model-item-name">
               ${isActive ? '<span class="model-active-badge">사용 중</span>' : ""}
+              ${selected ? '<span class="model-detect-badge">탐지</span>' : ""}
               <span class="model-name-text">${m.name}</span>
             </div>
             <div class="model-item-meta">${metaParts.join(" · ")}</div>
           </div>
           <div class="model-item-actions">
+            <label class="model-select">
+              <input type="checkbox" data-model-action="toggle-detect" ${selected ? "checked" : ""} />
+              탐지
+            </label>
             <button type="button" class="secondary small" data-model-action="activate" ${isActive ? "disabled" : ""}>${isActive ? "선택됨" : "사용"}</button>
             <button type="button" class="secondary small" data-model-action="frames">프레임</button>
             <button type="button" class="secondary small" data-model-action="rename">이름변경</button>
@@ -231,6 +255,7 @@ async function loadModels() {
   try {
     const data = await api("/api/pipeline/models");
     renderModels(data.models, data.active_id);
+    updateDetectButtonState();
   } catch (err) {
     console.error("loadModels failed", err);
   }
@@ -309,9 +334,18 @@ async function handleModelAction(event) {
   const action = btn.dataset.modelAction;
 
   try {
-    if (action === "activate") {
+    if (action === "toggle-detect") {
+      modelSelectionTouched = true;
+      if (btn.checked) selectedModelIds.add(modelId);
+      else selectedModelIds.delete(modelId);
+      modelListKey = "";
+      renderModels(lastPipelineState?.models || [], lastPipelineState?.active_model_id);
+      updateDetectButtonState();
+    } else if (action === "activate") {
       btn.disabled = true;
       await api(`/api/pipeline/models/${modelId}/activate`, { method: "POST" });
+      modelSelectionTouched = true;
+      selectedModelIds.add(modelId);
       modelListKey = "";
       const { state } = await api("/api/pipeline/state");
       lastPipelineState = state;
@@ -337,6 +371,7 @@ async function handleModelAction(event) {
     } else if (action === "delete") {
       if (!confirm("이 모델을 삭제할까요? 되돌릴 수 없습니다.")) return;
       await api(`/api/pipeline/models/${modelId}`, { method: "DELETE" });
+      selectedModelIds.delete(modelId);
       modelListKey = "";
       const { state } = await api("/api/pipeline/state");
       lastPipelineState = state;
@@ -506,6 +541,10 @@ function updateStreamPreview({ force = false, cacheBust = false } = {}) {
   if (!url || (!force && url === streamPreviewUrl)) return;
   streamPreviewUrl = url;
   destroyStreamHls();
+  els.streamPreview.controls = false;
+  els.streamPreview.autoplay = true;
+  els.streamPreview.muted = true;
+  els.streamPreview.playsInline = true;
   els.streamPreview.removeAttribute("src");
   els.streamPreview.load();
   const sourceUrl = cacheBust ? streamUrlWithCacheBust(url) : url;
@@ -633,13 +672,29 @@ function drawStreamDetectionOverlay(state) {
       state.detect_overlay_updated_at || key,
     )}`;
     if (frameOverlay.getAttribute("src") !== src) {
+      frameOverlay.classList.add("hidden");
+      frameOverlay.onload = () => {
+        if (frameOverlay.getAttribute("src") !== src) return;
+        frameOverlay.classList.remove("hidden");
+        if (els.streamDetectOverlayStatus) {
+          els.streamDetectOverlayStatus.textContent = `탐지 프레임 · 객체 ${detections.length}개`;
+          els.streamDetectOverlayStatus.classList.remove("hidden");
+        }
+      };
+      frameOverlay.onerror = () => {
+        if (frameOverlay.getAttribute("src") !== src) return;
+        frameOverlay.classList.add("hidden");
+        frameOverlay.removeAttribute("src");
+        els.streamDetectOverlayStatus?.classList.add("hidden");
+      };
       frameOverlay.src = src;
+    } else if (frameOverlay.complete && frameOverlay.naturalWidth > 0) {
+      frameOverlay.classList.remove("hidden");
     }
-    frameOverlay.classList.remove("hidden");
     const ctx = canvas.getContext("2d");
     ctx?.clearRect(0, 0, canvas.width, canvas.height);
     canvas.classList.add("hidden");
-    if (els.streamDetectOverlayStatus) {
+    if (frameOverlay.complete && frameOverlay.naturalWidth > 0 && els.streamDetectOverlayStatus) {
       els.streamDetectOverlayStatus.textContent = `탐지 프레임 · 객체 ${detections.length}개`;
       els.streamDetectOverlayStatus.classList.remove("hidden");
     }
@@ -683,7 +738,8 @@ function drawStreamDetectionOverlay(state) {
   detections.forEach((det, index) => {
     const color = index % 2 ? "#fbbf24" : "#22c55e";
     const bbox = Array.isArray(det.bbox_xyxy) ? det.bbox_xyxy.map(Number) : [];
-    const label = `${det.class_name || "object"} ${Math.round(Number(det.confidence || 0) * 100)}%`;
+    const modelLabel = det.model_name || (det.ensemble_model_names || []).join(", ");
+    const label = `${det.class_name || "object"} ${Math.round(Number(det.confidence || 0) * 100)}%${modelLabel ? ` · ${modelLabel}` : ""}`;
     ctx.lineWidth = 3;
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -738,12 +794,45 @@ function drawStreamDetectionOverlay(state) {
   }
 }
 
+function parseLakeNumberList(value, { min = 0, max = 59, label = "값" } = {}) {
+  const parts = String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!parts.length) throw new Error(`${label}을 입력하세요.`);
+  const seen = new Set();
+  const values = [];
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) throw new Error(`${label}은 숫자와 쉼표만 사용할 수 있습니다.`);
+    const number = Number(part);
+    if (number < min || number > max) throw new Error(`${label}은 ${min}-${max} 사이여야 합니다.`);
+    if (!seen.has(number)) {
+      seen.add(number);
+      values.push(number);
+    }
+  }
+  return values;
+}
+
+function formatLakeList(values) {
+  return values.map((value) => String(value).padStart(2, "0")).join(",");
+}
+
 function readLakeSelection() {
+  const minuteOffsets = parseLakeNumberList(els.lakeMinuteOffsets?.value, {
+    max: 4,
+    label: "시작 분 후보",
+  });
+  const secondSuffixes = parseLakeNumberList(els.lakeSecondSuffixes?.value, {
+    label: "초 suffix",
+  }).map((value) => String(value).padStart(2, "0"));
   return {
     media: els.lakeMedia?.value || null,
     year_folder: els.lakeYearFolder?.value || null,
     vessel: els.lakeVessel?.value || null,
     stream: els.lakeStream?.value || null,
+    minute_offsets: minuteOffsets,
+    second_suffixes: secondSuffixes,
   };
 }
 
@@ -781,6 +870,13 @@ function updateDetectButtonState() {
     }
     return;
   }
+  if (!selectedDetectionModelIds().length && !detectActive) {
+    els.detectBtn.disabled = true;
+    if (els.detectStatus) {
+      setStatus(els.detectStatus, "탐지에 사용할 모델을 하나 이상 선택하세요.");
+    }
+    return;
+  }
   if (detectSourceMode === "lake") {
     els.detectBtn.disabled = lakeVideosReady <= 0;
     return;
@@ -806,11 +902,19 @@ function populateLakeSelect(selectEl, component) {
 
 function updateLakeUrlPreview() {
   if (!els.lakeUrlPreview || !lakeSpec) return;
-  const sel = readLakeSelection();
-  const minute = String(lakeSpec.minute_slots?.[0] ?? 0).padStart(2, "0");
-  const suffix = lakeSpec.components?.suffix?.default ?? "16";
+  let sel;
+  try {
+    sel = readLakeSelection();
+  } catch (err) {
+    els.lakeUrlPreview.textContent = err.message;
+    return;
+  }
+  const minute = String(sel.minute_offsets?.[0] ?? lakeSpec.minute_offsets?.[0] ?? 0).padStart(2, "0");
+  const suffix = sel.second_suffixes?.[0] || lakeSpec.components?.suffix?.default || "16";
   const filename = `${sel.vessel}_${sel.stream}_YYMMDD_HH${minute}${suffix}.mp4`;
-  els.lakeUrlPreview.textContent = `${lakeSpec.base_host}${sel.media}/${sel.year_folder}/MM/DD/HH/${filename}`;
+  els.lakeUrlPreview.textContent =
+    `${lakeSpec.base_host}${sel.media}/${sel.year_folder}/MM/DD/HH/${filename}` +
+    " · 선택한 시작 분에서 5분 간격";
 }
 
 async function loadLakeConfig() {
@@ -822,6 +926,13 @@ async function loadLakeConfig() {
     populateLakeSelect(els.lakeYearFolder, components.year_folder);
     populateLakeSelect(els.lakeVessel, components.vessel);
     populateLakeSelect(els.lakeStream, components.stream);
+    if (els.lakeMinuteOffsets) {
+      els.lakeMinuteOffsets.value = formatLakeList(spec.minute_offsets || [0]);
+    }
+    if (els.lakeSecondSuffixes) {
+      const defaultSuffix = components.suffix?.default || "16";
+      els.lakeSecondSuffixes.value = String(defaultSuffix).padStart(2, "0");
+    }
     updateLakeUrlPreview();
   } catch (err) {
     console.error("loadLakeConfig failed", err);
@@ -829,14 +940,25 @@ async function loadLakeConfig() {
 }
 
 async function discoverLakeVideos() {
-  const range = readLakeRange();
-  setStatus(els.lakeDiscoverStatus, "영상 목록 확인 중...");
+  let range;
+  try {
+    range = readLakeRange();
+  } catch (err) {
+    lakeVideosReady = 0;
+    setStatus(els.lakeDiscoverStatus, err.message, "error");
+    updateDetectButtonState();
+    return null;
+  }
+  setStatus(els.lakeDiscoverStatus, "영상 목록 확인 중... 후보 URL을 병렬 확인합니다.");
   els.lakeDiscoverBtn.disabled = true;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), LAKE_DISCOVER_TIMEOUT_MS);
   try {
     const result = await api("/api/pipeline/lake-videos/discover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...range, check_exists: true }),
+      signal: controller.signal,
     });
     lakeVideosReady = result.found_count || 0;
     const preview = (result.videos || [])
@@ -853,10 +975,15 @@ async function discoverLakeVideos() {
     return result;
   } catch (err) {
     lakeVideosReady = 0;
-    setStatus(els.lakeDiscoverStatus, err.message, "error");
+    const message =
+      err.name === "AbortError"
+        ? "영상 확인 시간이 초과되었습니다. 시작 분 후보나 시간 범위를 줄여 다시 시도하세요."
+        : err.message;
+    setStatus(els.lakeDiscoverStatus, message, "error");
     updateDetectButtonState();
     return null;
   } finally {
+    window.clearTimeout(timeoutId);
     els.lakeDiscoverBtn.disabled = false;
   }
 }
@@ -2599,6 +2726,15 @@ els.lakeDiscoverBtn?.addEventListener("click", discoverLakeVideos);
   });
 });
 
+[els.lakeMinuteOffsets, els.lakeSecondSuffixes].forEach((inputEl) => {
+  inputEl?.addEventListener("input", () => {
+    lakeVideosReady = 0;
+    setStatus(els.lakeDiscoverStatus, "");
+    updateLakeUrlPreview();
+    updateDetectButtonState();
+  });
+});
+
 document.querySelectorAll('input[name="detectSource"]').forEach((input) => {
   input.addEventListener("change", () => {
     lakeVideosReady = 0;
@@ -2642,6 +2778,12 @@ els.streamPreview?.addEventListener("playing", () => {
 els.detectBtn.addEventListener("click", async () => {
   detectSourceMode = getDetectSourceMode();
   els.detectBtn.disabled = true;
+  const modelIds = selectedDetectionModelIds();
+  if (!modelIds.length) {
+    alert("탐지에 사용할 모델을 하나 이상 선택하세요.");
+    updateDetectButtonState();
+    return;
+  }
 
   if (detectSourceMode === "lake") {
     if (lakeVideosReady <= 0) {
@@ -2666,6 +2808,7 @@ els.detectBtn.addEventListener("click", async () => {
           imgsz: Number(els.detectImgsz?.value || 416),
           use_sam: !!els.useSam?.checked,
           check_exists: true,
+          model_ids: modelIds,
         }),
       });
       await finishDetectStart(result, batchTotal);
@@ -2700,6 +2843,7 @@ els.detectBtn.addEventListener("click", async () => {
           confidence: Number(els.confidence.value),
           imgsz: Number(els.detectImgsz?.value || 416),
           use_sam: !!els.useSam?.checked,
+          model_ids: modelIds,
         }),
       });
       await finishDetectStart(result, 1);
@@ -2728,6 +2872,9 @@ els.detectBtn.addEventListener("click", async () => {
   form.append("confidence", els.confidence.value);
   form.append("imgsz", els.detectImgsz?.value || "416");
   form.append("use_sam", els.useSam?.checked ? "true" : "false");
+  for (const modelId of modelIds) {
+    form.append("model_ids", modelId);
+  }
   beginDetectSession(files.length);
   setStatus(els.detectStatus, `비디오 업로드 중... (${files.length}개)`);
   try {

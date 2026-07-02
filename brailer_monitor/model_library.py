@@ -58,6 +58,9 @@ class ModelLibrary:
         model_id = self._validate_model_id(model_id)
         return self.root / model_id
 
+    def model_dir(self, model_id: str) -> Path:
+        return self._model_dir(model_id)
+
     def _meta_path(self, model_id: str) -> Path:
         return self._model_dir(model_id) / "meta.json"
 
@@ -164,6 +167,16 @@ class ModelLibrary:
         shutil.rmtree(directory)
         logger.info("Deleted model %s", model_id)
         return True
+
+    def update_dataset_frames(
+        self,
+        model_id: str,
+        dataset_frames: list[dict[str, Any]],
+    ) -> ModelRecord:
+        record = self.get(model_id)
+        record.dataset_frames = list(dataset_frames)
+        self._write_meta(record)
+        return record
 
     def rename(self, model_id: str, name: str) -> ModelRecord:
         record = self.get(model_id)

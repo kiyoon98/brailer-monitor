@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from .detector import BrailerDetector, Detection
 
 logger = logging.getLogger(__name__)
 DEFAULT_SAM_MODEL = "sam2_t.pt"
+ENSEMBLE_IOU_THRESHOLD = 0.5
 
 
 class DetectionCancelled(Exception):
@@ -44,7 +45,9 @@ def _draw_detections(frame: np.ndarray, detections: list[dict[str, Any]]) -> np.
         x1, y1, x2, y2 = [int(float(v)) for v in bbox]
         color = (0, 200, 80)
         cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
-        label = f"{det.get('class_name', 'object')} {float(det.get('confidence') or 0):.2f}"
+        model_label = det.get("model_name") or ", ".join(det.get("ensemble_model_names") or [])
+        suffix = f" · {model_label}" if model_label else ""
+        label = f"{det.get('class_name', 'object')} {float(det.get('confidence') or 0):.2f}{suffix}"
         cv2.putText(
             vis,
             label,
@@ -156,9 +159,152 @@ class SamBoxSegmenter:
         return out
 
 
+def _normalize_model_specs(
+    model_path: Path | None,
+    model_specs: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    specs = list(model_specs or [])
+    if not specs:
+        if model_path is None:
+            raise ValueError("No detection model provided")
+        specs = [{"path": str(model_path)}]
+
+    normalized: list[dict[str, Any]] = []
+    for index, spec in enumerate(specs):
+        raw_path = str(spec.get("path") or spec.get("weights_path") or "").strip()
+        if not raw_path:
+            raise ValueError("Model spec is missing path")
+        path = Path(raw_path)
+        name = str(spec.get("name") or path.stem)
+        normalized.append(
+            {
+                "id": str(spec.get("id") or f"model_{index + 1}"),
+                "name": name,
+                "path": str(path),
+                "task_type": str(spec.get("task_type") or ""),
+            }
+        )
+    return normalized
+
+
+def _use_segmentation_for_spec(default: bool | None, spec: dict[str, Any]) -> bool:
+    if default is not None:
+        return default
+    task_type = str(spec.get("task_type") or "").lower()
+    if task_type:
+        return task_type == "segment"
+    path = Path(str(spec.get("path") or ""))
+    return _meta_task_type() == "segment" or "seg" in path.name.lower()
+
+
+def _build_detectors(
+    model_path: Path | None,
+    model_specs: list[dict[str, Any]] | None,
+    *,
+    confidence: float,
+    device: str | int,
+    use_segmentation: bool | None,
+    imgsz: int,
+) -> tuple[list[tuple[dict[str, Any], BrailerDetector]], list[dict[str, Any]]]:
+    specs = _normalize_model_specs(model_path, model_specs)
+    detectors: list[tuple[dict[str, Any], BrailerDetector]] = []
+    for spec in specs:
+        detector = BrailerDetector(
+            model_path=Path(str(spec["path"])),
+            confidence_threshold=confidence,
+            device=device,
+            use_segmentation=_use_segmentation_for_spec(use_segmentation, spec),
+            imgsz=imgsz,
+        )
+        detectors.append((spec, detector))
+    return detectors, specs
+
+
+def _predict_ensemble(
+    detectors: list[tuple[dict[str, Any], BrailerDetector]],
+    frame: np.ndarray,
+) -> list[Detection]:
+    detections: list[Detection] = []
+    for spec, detector in detectors:
+        for det in detector.predict(frame):
+            detections.append(
+                replace(
+                    det,
+                    model_id=str(spec.get("id") or ""),
+                    model_name=str(spec.get("name") or ""),
+                    model_path=str(spec.get("path") or ""),
+                )
+            )
+    return merge_ensemble_detections(detections)
+
+
 def _bbox_area_px(det: Detection) -> int:
     x1, y1, x2, y2 = det.bbox_xyxy
     return int(max(0.0, x2 - x1) * max(0.0, y2 - y1))
+
+
+def _bbox_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def merge_ensemble_detections(
+    detections: list[Detection],
+    *,
+    iou_threshold: float = ENSEMBLE_IOU_THRESHOLD,
+) -> list[Detection]:
+    """Merge same-class detections from multiple models using IoU clusters."""
+    if len(detections) <= 1:
+        return detections
+
+    remaining = sorted(detections, key=lambda det: det.confidence, reverse=True)
+    merged: list[Detection] = []
+    while remaining:
+        seed = remaining.pop(0)
+        cluster = [seed]
+        keep: list[Detection] = []
+        for det in remaining:
+            same_class = det.class_name == seed.class_name or det.class_id == seed.class_id
+            if same_class and _bbox_iou(seed.bbox_xyxy, det.bbox_xyxy) >= iou_threshold:
+                cluster.append(det)
+            else:
+                keep.append(det)
+        remaining = keep
+
+        best = max(cluster, key=lambda det: det.confidence)
+        model_ids = tuple(
+            dict.fromkeys(
+                str(det.model_id)
+                for det in sorted(cluster, key=lambda item: item.confidence, reverse=True)
+                if det.model_id
+            )
+        )
+        model_names = tuple(
+            dict.fromkeys(
+                str(det.model_name)
+                for det in sorted(cluster, key=lambda item: item.confidence, reverse=True)
+                if det.model_name
+            )
+        )
+        merged.append(
+            replace(
+                best,
+                ensemble_model_ids=model_ids,
+                ensemble_model_names=model_names,
+            )
+        )
+    return sorted(merged, key=lambda det: det.confidence, reverse=True)
 
 
 def _detection_to_dict(
@@ -178,6 +324,16 @@ def _detection_to_dict(
         "area_px": _bbox_area_px(det),
         "segmentation_source": "sam2" if sam_mask is not None else "yolo" if det.mask is not None else "bbox",
     }
+    if det.model_id:
+        out["model_id"] = det.model_id
+    if det.model_name:
+        out["model_name"] = det.model_name
+    if det.model_path:
+        out["model_path"] = det.model_path
+    if det.ensemble_model_ids:
+        out["ensemble_model_ids"] = list(det.ensemble_model_ids)
+    if det.ensemble_model_names:
+        out["ensemble_model_names"] = list(det.ensemble_model_names)
     if mask is not None:
         stats = _mask_stats(mask, frame_w, frame_h, det.bbox_xyxy)
         out.update(stats)
@@ -187,9 +343,10 @@ def _detection_to_dict(
 
 def detect_video(
     video_path: Path,
-    model_path: Path,
+    model_path: Path | None,
     *,
     output_dir: Path,
+    model_specs: list[dict[str, Any]] | None = None,
     frame_stride: int = 1,
     confidence: float = 0.35,
     device: str | int = 0,
@@ -207,9 +364,6 @@ def detect_video(
     preview_dir = output_dir / "previews"
     if save_previews:
         preview_dir.mkdir(parents=True, exist_ok=True)
-
-    if use_segmentation is None:
-        use_segmentation = _meta_task_type() == "segment" or "seg" in model_path.name.lower()
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -238,9 +392,10 @@ def detect_video(
     if should_cancel and should_cancel():
         raise DetectionCancelled("Detection cancelled by user")
 
-    detector = BrailerDetector(
-        model_path=model_path,
-        confidence_threshold=confidence,
+    detectors, model_manifest = _build_detectors(
+        model_path,
+        model_specs,
+        confidence=confidence,
         device=device,
         use_segmentation=use_segmentation,
         imgsz=imgsz,
@@ -256,7 +411,7 @@ def detect_video(
         if not ok:
             break
 
-        detections = detector.predict(frame)
+        detections = _predict_ensemble(detectors, frame)
         sam_masks: list[np.ndarray | None] = [None for _ in detections]
         if sam_segmenter is not None and detections:
             sam_masks = sam_segmenter.segment(
@@ -301,7 +456,9 @@ def detect_video(
 
     manifest = {
         "video": str(video_path.resolve()),
-        "model": str(model_path.resolve()),
+        "model": str(Path(model_manifest[0]["path"]).resolve()),
+        "models": model_manifest,
+        "ensemble": len(model_manifest) > 1,
         "fps": fps,
         "width": width,
         "height": height,
@@ -327,9 +484,10 @@ def detect_video(
 
 def detect_stream(
     stream_url: str,
-    model_path: Path,
+    model_path: Path | None,
     *,
     output_dir: Path,
+    model_specs: list[dict[str, Any]] | None = None,
     frame_stride: int = 5,
     confidence: float = 0.35,
     device: str | int = 0,
@@ -347,8 +505,6 @@ def detect_stream(
     if save_previews:
         preview_dir.mkdir(parents=True, exist_ok=True)
 
-    if use_segmentation is None:
-        use_segmentation = _meta_task_type() == "segment" or "seg" in model_path.name.lower()
     if frame_stride < 1:
         frame_stride = 1
 
@@ -365,9 +521,10 @@ def detect_stream(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
 
-    detector = BrailerDetector(
-        model_path=model_path,
-        confidence_threshold=confidence,
+    detectors, model_manifest = _build_detectors(
+        model_path,
+        model_specs,
+        confidence=confidence,
         device=device,
         use_segmentation=use_segmentation,
         imgsz=imgsz,
@@ -430,7 +587,7 @@ def detect_stream(
         if width <= 0 or height <= 0:
             height, width = frame.shape[:2]
 
-        detections = detector.predict(frame)
+        detections = _predict_ensemble(detectors, frame)
         sam_masks: list[np.ndarray | None] = [None for _ in detections]
         if sam_segmenter is not None and detections:
             sam_masks = sam_segmenter.segment(
@@ -474,7 +631,9 @@ def detect_stream(
     duration = frames_out[-1].timestamp_sec if frames_out else round(time.monotonic() - started_at, 3)
     manifest = {
         "video": stream_url,
-        "model": str(model_path.resolve()),
+        "model": str(Path(model_manifest[0]["path"]).resolve()),
+        "models": model_manifest,
+        "ensemble": len(model_manifest) > 1,
         "fps": fps,
         "width": width,
         "height": height,

@@ -6,6 +6,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -15,15 +16,18 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "lake_video.json"
+DEFAULT_MINUTE_OFFSETS = (0, 1, 2, 3, 4)
 DEFAULT_MINUTE_SLOTS = tuple(range(0, 60, 5))
 DEFAULT_SECOND_SUFFIXES = ("16",)
+DEFAULT_PROBE_TIMEOUT_SEC = 2.0
+DEFAULT_PROBE_WORKERS = 16
 
 DEFAULT_BASE_HOST = "http://10.2.10.158:8041/media/"
 DEFAULT_LAKE_COMPONENTS: dict[str, dict[str, Any]] = {
     "media": {
         "label": "미디어 폴더",
         "default": "lake_win",
-        "options": ["lake_win", "lake_aurora", "lake_dream", "seibu"],
+        "options": ["lake_win", "lake_aurora", "lake_dream", "seibu", "pharostar"],
     },
     "year_folder": {
         "label": "연도 폴더",
@@ -33,7 +37,7 @@ DEFAULT_LAKE_COMPONENTS: dict[str, dict[str, Any]] = {
     "vessel": {
         "label": "선박",
         "default": "JJR-102283",
-        "options": ["JJR-102283", "LAKE_AURORA", "JJR-211056", "seibu"],
+        "options": ["JJR-102283", "JJR-131066", "JJR-151069", "LAKE_AURORA", "JJR-211056", "seibu"],
     },
     "stream": {
         "label": "스트림",
@@ -43,7 +47,7 @@ DEFAULT_LAKE_COMPONENTS: dict[str, dict[str, Any]] = {
     "suffix": {
         "label": "초 접미사",
         "default": "16",
-        "options": ["16", "23"],
+        "options": ["16"],
     },
 }
 
@@ -157,10 +161,12 @@ def load_lake_component_spec(path: Path | None = None) -> dict[str, Any]:
         base_host = DEFAULT_BASE_HOST
     raw_components = payload.get("components")
     components = raw_components if isinstance(raw_components, dict) and raw_components else DEFAULT_LAKE_COMPONENTS
+    minute_offsets = [int(value) for value in payload.get("minute_offsets", DEFAULT_MINUTE_OFFSETS)]
     minute_slots = [int(value) for value in payload.get("minute_slots", DEFAULT_MINUTE_SLOTS)]
     return {
         "base_host": base_host,
         "components": components,
+        "minute_offsets": minute_offsets,
         "minute_slots": minute_slots,
     }
 
@@ -178,6 +184,77 @@ def _selected_or_default(component: dict[str, Any], value: str | None, *, name: 
         known = ", ".join(sorted(allowed))
         raise ValueError(f"알 수 없는 Lake {name}: {selected} (사용 가능: {known})")
     return selected
+
+
+def _split_values(value: Any) -> list[Any]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, Iterable):
+        return list(value)
+    return [value]
+
+
+def _normalize_minute_slots(value: Any, default: Iterable[int]) -> tuple[int, ...]:
+    raw_values = _split_values(value) or list(default)
+    slots: list[int] = []
+    for raw in raw_values:
+        try:
+            minute = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Lake 분 값이 올바르지 않습니다: {raw}") from exc
+        if minute < 0 or minute > 59:
+            raise ValueError(f"Lake 분 값은 0-59 사이여야 합니다: {minute}")
+        if minute not in slots:
+            slots.append(minute)
+    if not slots:
+        raise ValueError("Lake 분 후보가 비어 있습니다.")
+    return tuple(slots)
+
+
+def _normalize_minute_offsets(value: Any, default: Iterable[int]) -> tuple[int, ...]:
+    raw_values = _split_values(value) or list(default)
+    offsets: list[int] = []
+    for raw in raw_values:
+        try:
+            offset = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Lake 시작 분 값이 올바르지 않습니다: {raw}") from exc
+        if offset < 0 or offset > 4:
+            raise ValueError(f"Lake 시작 분 값은 0-4 사이여야 합니다: {offset}")
+        if offset not in offsets:
+            offsets.append(offset)
+    if not offsets:
+        raise ValueError("Lake 시작 분 후보가 비어 있습니다.")
+    return tuple(offsets)
+
+
+def _minute_slots_from_offsets(offsets: Iterable[int]) -> tuple[int, ...]:
+    slots: list[int] = []
+    for offset in offsets:
+        for minute in range(int(offset), 60, 5):
+            if minute not in slots:
+                slots.append(minute)
+    return tuple(sorted(slots))
+
+
+def _normalize_second_suffixes(value: Any, default: Iterable[str]) -> tuple[str, ...]:
+    raw_values = _split_values(value) or list(default)
+    suffixes: list[str] = []
+    for raw in raw_values:
+        text = str(raw).strip()
+        if not text.isdigit():
+            raise ValueError(f"Lake 초 suffix는 숫자여야 합니다: {text}")
+        second = int(text)
+        if second < 0 or second > 59:
+            raise ValueError(f"Lake 초 suffix는 0-59 사이여야 합니다: {text}")
+        suffix = f"{second:02d}"
+        if suffix not in suffixes:
+            suffixes.append(suffix)
+    if not suffixes:
+        raise ValueError("Lake 초 suffix가 비어 있습니다.")
+    return tuple(suffixes)
 
 
 def build_lake_config_from_selection(
@@ -200,10 +277,19 @@ def build_lake_config_from_selection(
     vessel = _selected_or_default(components.get("vessel", {}), sel.get("vessel"), name="vessel")
     stream = _selected_or_default(components.get("stream", {}), sel.get("stream"), name="stream")
 
-    suffix_options = components.get("suffix", {}).get("options") if isinstance(components.get("suffix"), dict) else None
-    suffixes = tuple(str(value).zfill(2)[-2:] for value in (suffix_options or DEFAULT_SECOND_SUFFIXES))
-    if not suffixes:
-        suffixes = DEFAULT_SECOND_SUFFIXES
+    suffix_component = components.get("suffix", {}) if isinstance(components.get("suffix"), dict) else {}
+    default_suffix = suffix_component.get("default")
+    suffix_options = suffix_component.get("options")
+    suffix_default = [default_suffix] if default_suffix not in (None, "") else suffix_options or DEFAULT_SECOND_SUFFIXES
+    suffixes = _normalize_second_suffixes(sel.get("second_suffixes") or sel.get("second_suffix"), suffix_default)
+    if sel.get("minute_slots") not in (None, ""):
+        minute_slots = _normalize_minute_slots(sel.get("minute_slots"), spec["minute_slots"])
+    else:
+        offsets = _normalize_minute_offsets(
+            sel.get("minute_offsets"),
+            spec.get("minute_offsets", DEFAULT_MINUTE_OFFSETS),
+        )
+        minute_slots = _minute_slots_from_offsets(offsets)
 
     base_url = f"{spec['base_host']}{media}/{year_folder}/"
     digits = "".join(ch for ch in str(year_folder) if ch.isdigit())[:4]
@@ -216,7 +302,7 @@ def build_lake_config_from_selection(
         base_url=base_url,
         file_prefix=f"{vessel}_{stream}",
         year=year,
-        minute_slots=tuple(spec["minute_slots"]),
+        minute_slots=minute_slots,
         second_suffixes=suffixes,
     )
 
@@ -303,7 +389,7 @@ def list_candidate_videos(
     return videos
 
 
-def probe_video_exists(url: str, *, timeout: float = 8.0) -> bool:
+def probe_video_exists(url: str, *, timeout: float = DEFAULT_PROBE_TIMEOUT_SEC) -> bool:
     for method, headers in (
         ("HEAD", {}),
         ("GET", {"Range": "bytes=0-0"}),
@@ -321,6 +407,11 @@ def probe_video_exists(url: str, *, timeout: float = 8.0) -> bool:
     return False
 
 
+def _candidate_minute_key(candidate: dict[str, str]) -> str:
+    stem = Path(candidate["filename"]).stem
+    return f"{candidate.get('folder', '')}:{stem[:-2]}"
+
+
 def discover_videos_in_range(
     *,
     start_month: int,
@@ -333,53 +424,45 @@ def discover_videos_in_range(
     check_exists: bool = True,
 ) -> list[dict[str, str]]:
     config = config or load_lake_video_config()
-    if not check_exists:
-        return list_candidate_videos(
-            start_month=start_month,
-            start_day=start_day,
-            start_hour=start_hour,
-            end_month=end_month,
-            end_day=end_day,
-            end_hour=end_hour,
-            config=config,
-        )
-
-    found: list[dict[str, str]] = []
-    for hour_dt in iter_hours_in_range(
+    candidates = list_candidate_videos(
         start_month=start_month,
         start_day=start_day,
         start_hour=start_hour,
         end_month=end_month,
         end_day=end_day,
         end_hour=end_hour,
-        year=config.year,
-    ):
-        folder = build_folder_path(hour_dt)
-        for minute in config.minute_slots:
-            matched: dict[str, str] | None = None
-            for suffix in _iter_slot_suffixes(config):
-                filename = build_filename(hour_dt, minute, config, second_suffix=suffix)
-                url = f"{config.base_url}{folder}{filename}"
-                if probe_video_exists(url):
-                    matched = {
-                        "filename": filename,
-                        "url": url,
-                        "folder": folder,
-                        "hour_label": hour_dt.strftime("%m-%d %H:00"),
-                        "profile": config.profile_id,
-                    }
-                    break
-            if matched is not None:
-                found.append(matched)
-            else:
-                logger.debug(
-                    "Lake video missing for %s %02d:%02d (suffixes=%s)",
-                    hour_dt.strftime("%m-%d %H"),
-                    hour_dt.hour,
-                    minute,
-                    ",".join(config.second_suffixes),
-                )
-    return found
+        config=config,
+    )
+    if not check_exists:
+        return candidates
+    if not candidates:
+        return []
+
+    found_by_minute: dict[str, tuple[int, dict[str, str]]] = {}
+    max_workers = min(DEFAULT_PROBE_WORKERS, len(candidates))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                probe_video_exists,
+                candidate["url"],
+                timeout=DEFAULT_PROBE_TIMEOUT_SEC,
+            ): (index, candidate)
+            for index, candidate in enumerate(candidates)
+        }
+        for future in as_completed(futures):
+            index, candidate = futures[future]
+            try:
+                exists = future.result()
+            except Exception:
+                exists = False
+            if not exists:
+                continue
+            key = _candidate_minute_key(candidate)
+            current = found_by_minute.get(key)
+            if current is None or index < current[0]:
+                found_by_minute[key] = (index, candidate)
+
+    return [candidate for _, candidate in sorted(found_by_minute.values(), key=lambda item: item[0])]
 
 
 def download_video(

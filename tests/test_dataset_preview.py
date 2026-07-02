@@ -44,6 +44,21 @@ class DatasetPreviewTests(unittest.TestCase):
             self.assertEqual(frame["frame_index"], 10)
             self.assertEqual(frame["objects"][0]["class_name"], "brailer")
             self.assertEqual(frame["objects"][0]["shape"], "polygon")
+            self.assertNotIn("polygon_norm", frame["objects"][0])
+            self.assertNotIn("polygon_px", frame["objects"][0])
+
+    def test_list_dataset_frames_can_include_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_dataset(root)
+            result = list_dataset_frames(root, include_geometry=True)
+            frame = result["frames"][0]
+            obj = frame["objects"][0]
+
+            self.assertEqual(frame["width"], 160)
+            self.assertEqual(frame["height"], 120)
+            self.assertEqual(obj["polygon_norm"][0], [0.10, 0.10])
+            self.assertEqual(obj["polygon_px"][0], [16, 12])
 
     def test_render_dataset_preview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

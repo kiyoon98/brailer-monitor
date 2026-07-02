@@ -1,11 +1,12 @@
 {
   "base_host": "http://10.2.10.158:8041/media/",
+  "minute_offsets": [0, 1, 2, 3, 4],
   "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
   "components": {
     "media": {
       "label": "미디어 폴더",
       "default": "lake_win",
-      "options": ["lake_win", "lake_aurora", "lake_dream", "seibu"]
+      "options": ["lake_win", "lake_aurora", "lake_dream", "seibu", "pharostar"]
     },
     "year_folder": {
       "label": "연도 폴더",
@@ -15,7 +16,7 @@
     "vessel": {
       "label": "선박",
       "default": "JJR-102283",
-      "options": ["JJR-102283", "LAKE_AURORA", "JJR-211056", "seibu"]
+      "options": ["JJR-102283", "JJR-131066", "JJR-151069", "LAKE_AURORA", "JJR-211056", "seibu"]
     },
     "stream": {
       "label": "스트림",
@@ -25,7 +26,7 @@
     "suffix": {
       "label": "초 접미사",
       "default": "16",
-      "options": ["16", "23"]
+      "options": ["16"]
     }
   }
 }

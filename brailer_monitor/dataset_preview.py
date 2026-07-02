@@ -22,12 +22,23 @@ class DatasetObject:
     polygon_norm: list[tuple[float, float]] | None = None
     bbox_norm: tuple[float, float, float, float] | None = None
 
-    def to_dict(self, width: int | None = None, height: int | None = None) -> dict[str, Any]:
+    def to_dict(
+        self,
+        width: int | None = None,
+        height: int | None = None,
+        *,
+        include_geometry: bool = False,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "class_id": self.class_id,
             "class_name": self.class_name,
             "shape": self.shape,
         }
+        if include_geometry:
+            if self.polygon_norm:
+                payload["polygon_norm"] = [[x, y] for x, y in self.polygon_norm]
+            if self.bbox_norm:
+                payload["bbox_norm"] = list(self.bbox_norm)
         if width and height:
             if self.polygon_norm:
                 payload["polygon_px"] = [
@@ -50,16 +61,25 @@ class DatasetFrame:
     frame_index: int
     image_name: str
     objects: tuple[DatasetObject, ...]
+    width: int | None = None
+    height: int | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_geometry: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "split": self.split,
             "stem": self.stem,
             "frame_index": self.frame_index,
             "image_name": self.image_name,
             "preview_url": f"/api/pipeline/dataset/preview/{self.split}/{self.image_name}",
-            "objects": [obj.to_dict() for obj in self.objects],
+            "objects": [
+                obj.to_dict(self.width, self.height, include_geometry=include_geometry)
+                for obj in self.objects
+            ],
         }
+        if include_geometry and self.width and self.height:
+            payload["width"] = self.width
+            payload["height"] = self.height
+        return payload
 
 
 def load_class_names(dataset_root: Path) -> list[str]:
@@ -118,7 +138,21 @@ def _load_label_objects(label_path: Path, class_names: list[str]) -> list[Datase
     return objects
 
 
-def _iter_split_frames(dataset_root: Path, split: str, class_names: list[str]) -> list[DatasetFrame]:
+def _read_image_size(image_path: Path) -> tuple[int | None, int | None]:
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return None, None
+    height, width = image.shape[:2]
+    return width, height
+
+
+def _iter_split_frames(
+    dataset_root: Path,
+    split: str,
+    class_names: list[str],
+    *,
+    include_geometry: bool = False,
+) -> list[DatasetFrame]:
     image_dir = dataset_root / "images" / split
     label_dir = dataset_root / "labels" / split
     if not image_dir.exists():
@@ -130,6 +164,7 @@ def _iter_split_frames(dataset_root: Path, split: str, class_names: list[str]) -
             continue
         stem = image_path.stem
         objects = _load_label_objects(label_dir / f"{stem}.txt", class_names)
+        width, height = _read_image_size(image_path) if include_geometry else (None, None)
         frames.append(
             DatasetFrame(
                 split=split,
@@ -137,6 +172,8 @@ def _iter_split_frames(dataset_root: Path, split: str, class_names: list[str]) -
                 frame_index=_frame_index_from_stem(stem),
                 image_name=image_path.name,
                 objects=tuple(objects),
+                width=width,
+                height=height,
             )
         )
     return frames
@@ -148,6 +185,7 @@ def list_dataset_frames(
     split: str = "all",
     offset: int = 0,
     limit: int = 60,
+    include_geometry: bool = False,
 ) -> dict[str, Any]:
     if not dataset_root.exists():
         raise FileNotFoundError(f"Dataset not found: {dataset_root}")
@@ -156,7 +194,14 @@ def list_dataset_frames(
     splits = ["train", "val"] if split == "all" else [split]
     frames: list[DatasetFrame] = []
     for item in splits:
-        frames.extend(_iter_split_frames(dataset_root, item, class_names))
+        frames.extend(
+            _iter_split_frames(
+                dataset_root,
+                item,
+                class_names,
+                include_geometry=include_geometry,
+            )
+        )
 
     frames.sort(key=lambda frame: frame.frame_index)
     total = len(frames)
@@ -166,7 +211,7 @@ def list_dataset_frames(
         "total": total,
         "offset": offset,
         "limit": limit,
-        "frames": [frame.to_dict() for frame in page],
+        "frames": [frame.to_dict(include_geometry=include_geometry) for frame in page],
     }
 
 

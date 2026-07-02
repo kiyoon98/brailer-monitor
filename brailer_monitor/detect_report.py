@@ -262,6 +262,83 @@ def _link_or_text(label: str, href: str | None) -> str:
     return f'<a href="{html.escape(href)}" target="_blank" rel="noreferrer">{escaped_label}</a>'
 
 
+def _timeline_color(class_name: str) -> str:
+    palette = [
+        "#2563eb",
+        "#16a34a",
+        "#dc2626",
+        "#9333ea",
+        "#c2410c",
+        "#0891b2",
+        "#be123c",
+        "#4f46e5",
+    ]
+    index = sum(ord(ch) for ch in class_name or "-") % len(palette)
+    return palette[index]
+
+
+def _format_timeline_label(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _render_timeline_overview(report: DetectionReport) -> str:
+    entries: list[tuple[DetectionSegmentReportRow, datetime, datetime]] = []
+    for row in report.rows:
+        start = _parse_report_time(row.start_time)
+        end = _parse_report_time(row.end_time) or start
+        if start is None or end is None:
+            continue
+        if end < start:
+            end = start
+        entries.append((row, start, end))
+
+    if not entries:
+        return '<p class="muted">표시할 시간 정보가 있는 탐지 구간이 없습니다.</p>'
+
+    range_start = min(start for _row, start, _end in entries)
+    range_end = max(end for _row, _start, end in entries)
+    if range_end <= range_start:
+        range_end = range_start
+    total_sec = max((range_end - range_start).total_seconds(), 1.0)
+
+    markers: list[str] = []
+    for row, start, end in entries:
+        left = max(0.0, min(100.0, ((start - range_start).total_seconds() / total_sec) * 100.0))
+        width = max(0.35, min(100.0 - left, ((end - start).total_seconds() / total_sec) * 100.0))
+        color = _timeline_color(row.class_name)
+        title = (
+            f"{row.class_name} · {row.best_match_pct:.2f}% · "
+            f"{row.start_time} - {row.end_time} · {row.video_name}"
+        )
+        label = f"{html.escape(row.class_name)} {row.best_match_pct:.0f}%"
+        content = f'<span>{label}</span>'
+        marker = (
+            f'<a class="timeline-marker" href="{html.escape(row.preview_url)}" '
+            f'target="_blank" rel="noreferrer" title="{html.escape(title)}" '
+            f'style="left:{left:.4f}%;width:{width:.4f}%;background:{color}">{content}</a>'
+            if row.preview_url
+            else f'<div class="timeline-marker" title="{html.escape(title)}" '
+            f'style="left:{left:.4f}%;width:{width:.4f}%;background:{color}">{content}</div>'
+        )
+        markers.append(marker)
+
+    class_legend = " ".join(
+        f'<span class="legend-item"><i style="background:{_timeline_color(name)}"></i>{html.escape(name)} ({count})</span>'
+        for name, count in sorted(report.class_counts.items())
+    )
+    return (
+        '<div class="timeline-overview">'
+        '<div class="timeline-scale">'
+        f'<span>{html.escape(_format_timeline_label(range_start))}</span>'
+        f'<span>{html.escape(_format_timeline_label(range_end))}</span>'
+        '</div>'
+        f'<div class="timeline-bar">{"".join(markers)}</div>'
+        f'<div class="timeline-legend">{class_legend or "-"}</div>'
+        '<p class="muted">각 막대는 병합된 연속 탐지 구간입니다. 막대를 누르면 대표 프레임을 엽니다.</p>'
+        '</div>'
+    )
+
+
 def _render_table_rows(rows: list[DetectionSegmentReportRow]) -> str:
     rendered = []
     for row in rows:
@@ -287,6 +364,7 @@ def render_detection_report_html(report: DetectionReport) -> str:
     top_duration = sorted(report.rows, key=lambda row: (row.duration_sec, row.best_confidence), reverse=True)[:20]
     top_confidence = sorted(report.rows, key=lambda row: (row.best_confidence, row.duration_sec), reverse=True)[:20]
     class_counts = ", ".join(f"{html.escape(name)}: {count}" for name, count in sorted(report.class_counts.items()))
+    timeline_overview = _render_timeline_overview(report)
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -299,6 +377,15 @@ def render_detection_report_html(report: DetectionReport) -> str:
     .cards {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }}
     .card {{ border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; }}
     .value {{ font-size: 24px; font-weight: 700; }}
+    .timeline-overview {{ margin: 18px 0 28px; }}
+    .timeline-scale {{ display: flex; justify-content: space-between; gap: 16px; color: #6b7280; font-size: 12px; margin-bottom: 6px; }}
+    .timeline-bar {{ position: relative; height: 72px; border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb; overflow: hidden; }}
+    .timeline-bar::before {{ content: ""; position: absolute; left: 0; right: 0; top: 35px; border-top: 1px solid #d1d5db; }}
+    .timeline-marker {{ position: absolute; top: 16px; height: 40px; min-width: 4px; border-radius: 4px; color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.22); overflow: hidden; }}
+    .timeline-marker span {{ display: block; padding: 12px 6px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 700; }}
+    .timeline-legend {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: #374151; }}
+    .legend-item {{ display: inline-flex; align-items: center; gap: 5px; }}
+    .legend-item i {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; }}
     table {{ width: 100%; border-collapse: collapse; margin: 14px 0 28px; font-size: 13px; }}
     th, td {{ border: 1px solid #d1d5db; padding: 7px 8px; text-align: left; vertical-align: top; }}
     th {{ background: #f3f4f6; }}
@@ -319,6 +406,9 @@ def render_detection_report_html(report: DetectionReport) -> str:
   <p>클래스별 구간 수: {class_counts or "-"}</p>
   <p>평균 연속 시간: {report.duration_avg_sec:.3f}s · 최소: {report.duration_min_sec:.3f}s · 최대: {report.duration_max_sec:.3f}s</p>
   <p class="muted">대표 프레임 링크는 bbox와 mask가 표시된 preview 이미지를 엽니다. 영상 링크는 해당 탐지 job의 원본 영상을 엽니다.</p>
+
+  <h2>전체 타임라인</h2>
+  {timeline_overview}
 
   <h2>연속 시간이 긴 대표 구간</h2>
   <table>

@@ -99,7 +99,7 @@ class DetectReportTests(unittest.TestCase):
                             "frame_index": 1,
                             "timestamp_sec": 1.0,
                             "detections": [{"class_name": "brailer", "confidence": 0.8}],
-                            "preview_path": None,
+                            "preview_path": "frame_000001.jpg",
                         }
                     ],
                 },
@@ -116,6 +116,9 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(result["output_dir"], str((root / "reports").resolve()))
             html_text = (root / "reports" / files["html"]).read_text(encoding="utf-8")
             self.assertIn("/api/pipeline/detect/job1/video", html_text)
+            self.assertIn("전체 타임라인", html_text)
+            self.assertIn("timeline-marker", html_text)
+            self.assertIn("/api/pipeline/detect/job1/previews/frame_000001.jpg", html_text)
 
 
 if __name__ == "__main__":

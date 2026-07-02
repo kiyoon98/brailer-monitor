@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 import shutil
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 import cv2
 
 from ..cvat_import import inspect_cvat
@@ -52,6 +54,10 @@ class LakeRangeRequest(BaseModel):
     year_folder: str | None = None
     vessel: str | None = None
     stream: str | None = None
+    minute_offsets: list[int] | None = None
+    minute_slots: list[int] | None = None
+    second_suffixes: list[str] | None = None
+    model_ids: list[str] | None = None
     start_month: int = Field(ge=1, le=12)
     start_day: int = Field(ge=1, le=31)
     start_hour: int = Field(ge=0, le=23)
@@ -68,6 +74,7 @@ class LakeRangeRequest(BaseModel):
 
 class StreamDetectRequest(BaseModel):
     stream_url: str = Field(default="http://127.0.0.1:8081/live_04.m3u8", min_length=1)
+    model_ids: list[str] | None = None
     frame_stride: int = Field(default=5, ge=1)
     confidence: float = Field(default=0.6, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
@@ -295,6 +302,16 @@ async def pipeline_model_frames(model_id: str, limit: int = 48) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/pipeline/models/{model_id}/preview/{split}/{filename}")
+async def pipeline_model_preview(model_id: str, split: str, filename: str):
+    try:
+        return FileResponse(pipeline.resolve_model_preview(model_id, split, filename))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/pipeline/models/{model_id}/rename")
 async def pipeline_model_rename(model_id: str, body: RenameModelRequest) -> dict:
     try:
@@ -321,6 +338,7 @@ async def pipeline_detect_stop() -> dict:
 @app.post("/api/pipeline/detect")
 async def pipeline_detect(
     files: list[UploadFile] = File(...),
+    model_ids: list[str] | None = Form(None),
     frame_stride: int = Form(5),
     confidence: float = Form(0.6),
     imgsz: int = Form(416),
@@ -351,6 +369,7 @@ async def pipeline_detect(
 
         return pipeline.start_detection_batch(
             saved,
+            model_ids=model_ids,
             frame_stride=frame_stride,
             confidence=confidence,
             imgsz=imgsz,
@@ -370,6 +389,7 @@ async def pipeline_lake_video_config() -> dict:
     return {
         "base_host": spec["base_host"],
         "components": spec["components"],
+        "minute_offsets": spec["minute_offsets"],
         "minute_slots": spec["minute_slots"],
     }
 
@@ -381,6 +401,9 @@ def _load_lake_config(body: LakeRangeRequest):
             "year_folder": body.year_folder,
             "vessel": body.vessel,
             "stream": body.stream,
+            "minute_offsets": body.minute_offsets,
+            "minute_slots": body.minute_slots,
+            "second_suffixes": body.second_suffixes,
         },
         path=CONFIG_DIR / "lake_video.json",
     )
@@ -399,15 +422,18 @@ async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
             end_hour=body.end_hour,
             config=config,
         )
-        videos = discover_videos_in_range(
-            start_month=body.start_month,
-            start_day=body.start_day,
-            start_hour=body.start_hour,
-            end_month=body.end_month,
-            end_day=body.end_day,
-            end_hour=body.end_hour,
-            config=config,
-            check_exists=body.check_exists,
+        videos = await run_in_threadpool(
+            partial(
+                discover_videos_in_range,
+                start_month=body.start_month,
+                start_day=body.start_day,
+                start_hour=body.start_hour,
+                end_month=body.end_month,
+                end_day=body.end_day,
+                end_hour=body.end_hour,
+                config=config,
+                check_exists=body.check_exists,
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -419,6 +445,8 @@ async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
         "base_url": config.base_url,
         "file_prefix": config.file_prefix,
         "year": config.year,
+        "minute_slots": list(config.minute_slots),
+        "second_suffixes": list(config.second_suffixes),
         "videos": videos[:24],
         "sample_missing": max(0, len(candidates) - len(videos)),
     }
@@ -428,15 +456,18 @@ async def pipeline_lake_video_discover(body: LakeRangeRequest) -> dict:
 async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
     try:
         config = _load_lake_config(body)
-        videos = discover_videos_in_range(
-            start_month=body.start_month,
-            start_day=body.start_day,
-            start_hour=body.start_hour,
-            end_month=body.end_month,
-            end_day=body.end_day,
-            end_hour=body.end_hour,
-            config=config,
-            check_exists=body.check_exists,
+        videos = await run_in_threadpool(
+            partial(
+                discover_videos_in_range,
+                start_month=body.start_month,
+                start_day=body.start_day,
+                start_hour=body.start_hour,
+                end_month=body.end_month,
+                end_day=body.end_day,
+                end_hour=body.end_hour,
+                config=config,
+                check_exists=body.check_exists,
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -448,6 +479,7 @@ async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
     try:
         return pipeline.start_detection_batch(
             payload,
+            model_ids=body.model_ids,
             frame_stride=body.frame_stride,
             confidence=body.confidence,
             imgsz=body.imgsz,
@@ -463,6 +495,7 @@ async def pipeline_detect_stream(body: StreamDetectRequest) -> dict:
     try:
         return pipeline.start_stream_detection(
             body.stream_url,
+            model_ids=body.model_ids,
             frame_stride=body.frame_stride,
             confidence=body.confidence,
             imgsz=body.imgsz,

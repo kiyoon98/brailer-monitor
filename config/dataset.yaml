@@ -6,4 +6,4 @@ val: images/val
 names:
   0: brailer
 
-# task: segment, train: 60, val: 15
+# task: segment, train: 119, val: 29
