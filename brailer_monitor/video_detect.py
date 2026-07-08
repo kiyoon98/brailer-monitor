@@ -19,6 +19,11 @@ from .detector import BrailerDetector, Detection
 logger = logging.getLogger(__name__)
 DEFAULT_SAM_MODEL = "sam2_t.pt"
 ENSEMBLE_IOU_THRESHOLD = 0.5
+DARK_VIDEO_SAMPLE_COUNT = 5
+DARK_MEAN_STRICT_THRESHOLD = 35.0
+DARK_MEAN_THRESHOLD = 45.0
+DARK_STD_THRESHOLD = 18.0
+DARK_P90_THRESHOLD = 70.0
 
 
 class DetectionCancelled(Exception):
@@ -341,6 +346,65 @@ def _detection_to_dict(
     return out
 
 
+def _frame_darkness_stats(frame: np.ndarray) -> dict[str, float | bool]:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    mean = float(gray.mean())
+    std = float(gray.std())
+    p90 = float(np.percentile(gray, 90))
+    too_dark = (mean < DARK_MEAN_STRICT_THRESHOLD and p90 < DARK_P90_THRESHOLD) or (
+        mean < DARK_MEAN_THRESHOLD and std < DARK_STD_THRESHOLD
+    )
+    return {
+        "mean": round(mean, 2),
+        "std": round(std, 2),
+        "p90": round(p90, 2),
+        "too_dark": bool(too_dark),
+    }
+
+
+def assess_video_darkness(
+    cap: cv2.VideoCapture,
+    total_frames: int,
+    *,
+    sample_count: int = DARK_VIDEO_SAMPLE_COUNT,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Sample a video and return whether every readable sample is clearly dark."""
+    sample_count = max(1, sample_count)
+    if total_frames > 1:
+        indices = np.linspace(0, total_frames - 1, min(sample_count, total_frames), dtype=int).tolist()
+        indices = list(dict.fromkeys(int(index) for index in indices))
+    else:
+        indices = [0]
+
+    samples: list[dict[str, Any]] = []
+    for index in indices:
+        if should_cancel and should_cancel():
+            raise DetectionCancelled("Detection cancelled by user")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        stats = _frame_darkness_stats(frame)
+        stats["frame_index"] = index
+        samples.append(stats)
+
+    dark_count = sum(1 for sample in samples if sample.get("too_dark"))
+    sample_total = len(samples)
+    return {
+        "sample_count": sample_total,
+        "dark_sample_count": dark_count,
+        "all_samples_dark": sample_total > 0 and dark_count == sample_total,
+        "thresholds": {
+            "mean_strict_lt": DARK_MEAN_STRICT_THRESHOLD,
+            "mean_lt": DARK_MEAN_THRESHOLD,
+            "std_lt": DARK_STD_THRESHOLD,
+            "p90_lt": DARK_P90_THRESHOLD,
+        },
+        "samples": samples,
+    }
+
+
 def detect_video(
     video_path: Path,
     model_path: Path | None,
@@ -353,6 +417,7 @@ def detect_video(
     imgsz: int = 416,
     use_segmentation: bool | None = None,
     use_sam: bool = False,
+    skip_dark_video: bool = False,
     max_frames: int | None = None,
     save_previews: bool = True,
     on_progress: Callable[[int, int, int], None] | None = None,
@@ -392,9 +457,46 @@ def detect_video(
     if should_cancel and should_cancel():
         raise DetectionCancelled("Detection cancelled by user")
 
+    model_manifest = _normalize_model_specs(model_path, model_specs)
+    dark_assessment: dict[str, Any] | None = None
+    if skip_dark_video:
+        dark_assessment = assess_video_darkness(
+            cap,
+            total_frames,
+            should_cancel=should_cancel,
+        )
+        if dark_assessment.get("all_samples_dark"):
+            cap.release()
+            if on_progress is not None:
+                on_progress(total_planned, total_planned, 0)
+            manifest = {
+                "video": str(video_path.resolve()),
+                "model": str(Path(model_manifest[0]["path"]).resolve()),
+                "models": model_manifest,
+                "ensemble": len(model_manifest) > 1,
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "total_frames": total_frames,
+                "frame_stride": frame_stride,
+                "imgsz": imgsz,
+                "use_sam": use_sam,
+                "dark_skip_enabled": True,
+                "dark_video_assessment": dark_assessment,
+                "skipped": True,
+                "skip_reason": "dark_video",
+                "frames_processed": 0,
+                "frames_with_detections": 0,
+                "frames": [],
+            }
+            manifest_path = output_dir / "detections.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+            logger.info("Skipped dark video: %s -> %s", video_path, manifest_path)
+            return manifest
+
     detectors, model_manifest = _build_detectors(
         model_path,
-        model_specs,
+        model_manifest,
         confidence=confidence,
         device=device,
         use_segmentation=use_segmentation,
@@ -466,6 +568,9 @@ def detect_video(
         "frame_stride": frame_stride,
         "imgsz": imgsz,
         "use_sam": use_sam,
+        "dark_skip_enabled": skip_dark_video,
+        "dark_video_assessment": dark_assessment,
+        "skipped": False,
         "frames_processed": len(frames_out),
         "frames_with_detections": sum(1 for f in frames_out if f.detections),
         "frames": [f.to_dict() for f in frames_out],

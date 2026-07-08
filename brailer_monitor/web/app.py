@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from functools import partial
 import shutil
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -68,6 +70,7 @@ class LakeRangeRequest(BaseModel):
     confidence: float = Field(default=0.6, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
     use_sam: bool = False
+    skip_dark_video: bool = True
     device: str | int = 0
     check_exists: bool = True
 
@@ -83,11 +86,21 @@ class StreamDetectRequest(BaseModel):
 
 
 class TimelineCompactRequest(BaseModel):
-    max_gap_sec: float = Field(default=10.0, ge=0.0, le=60.0)
+    max_gap_sec: float = Field(default=8.0, ge=0.0, le=60.0)
+    merge_segments: bool = True
+    remove_position_outliers: bool = True
+    remove_size_outliers: bool = True
+    remove_tall_thin_boxes: bool = True
+    remove_static_short_tracks: bool = True
+    remove_color_outliers: bool = True
 
 
 class SaveDetectionResultsRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+
+
+class DetectionReportRequest(BaseModel):
+    saved_result_id: str | None = None
 
 
 class LabelRequest(BaseModel):
@@ -343,6 +356,7 @@ async def pipeline_detect(
     confidence: float = Form(0.6),
     imgsz: int = Form(416),
     use_sam: bool = Form(False),
+    skip_dark_video: bool = Form(True),
     device: str | int = Form(0),
 ) -> dict:
     if not files:
@@ -374,6 +388,7 @@ async def pipeline_detect(
             confidence=confidence,
             imgsz=imgsz,
             use_sam=use_sam,
+            skip_dark_video=skip_dark_video,
             device=device,
         )
     except FileNotFoundError as exc:
@@ -484,6 +499,7 @@ async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
             confidence=body.confidence,
             imgsz=body.imgsz,
             use_sam=body.use_sam,
+            skip_dark_video=body.skip_dark_video,
             device=body.device,
         )
     except FileNotFoundError as exc:
@@ -528,11 +544,27 @@ async def pipeline_detect_timeline_reset() -> dict:
     return {"timeline": pipeline.reset_timeline()}
 
 
+@app.get("/api/pipeline/detect/timeline/reset/redirect")
+async def pipeline_detect_timeline_reset_redirect() -> RedirectResponse:
+    pipeline.reset_timeline()
+    return RedirectResponse(url="/", status_code=303)
+
+
 @app.post("/api/pipeline/detect/timeline/compact")
 async def pipeline_detect_timeline_compact(body: TimelineCompactRequest | None = None) -> dict:
-    gap = body.max_gap_sec if body is not None else 10.0
+    body = body or TimelineCompactRequest()
     try:
-        return {"timeline": pipeline.compact_timeline(max_gap_sec=gap)}
+        return {
+            "timeline": pipeline.compact_timeline(
+                max_gap_sec=body.max_gap_sec,
+                merge_segments=body.merge_segments,
+                remove_position_outliers=body.remove_position_outliers,
+                remove_size_outliers=body.remove_size_outliers,
+                remove_tall_thin_boxes=body.remove_tall_thin_boxes,
+                remove_static_short_tracks=body.remove_static_short_tracks,
+                remove_color_outliers=body.remove_color_outliers,
+            )
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -566,16 +598,127 @@ async def pipeline_detect_load_results(result_id: str) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _generate_detection_report() -> dict:
-    timeline_path = PIPELINE_ROOT / "detect_timeline.json"
-    return write_detection_report_bundle(timeline_path, REPORTS_ROOT)
+def _generate_detection_report(saved_result_id: str | None = None) -> dict:
+    effective_saved_result_id = saved_result_id or pipeline.loaded_saved_result_id()
+    timeline_path = (
+        pipeline.saved_result_timeline_path(effective_saved_result_id)
+        if effective_saved_result_id
+        else PIPELINE_ROOT / "detect_timeline.json"
+    )
+    asset_url_prefix = (
+        f"/api/pipeline/detect/results/{quote(effective_saved_result_id, safe='')}/jobs"
+        if effective_saved_result_id
+        else "/api/pipeline/detect"
+    )
+    result = write_detection_report_bundle(
+        timeline_path,
+        REPORTS_ROOT,
+        asset_url_prefix=asset_url_prefix,
+    )
+    result["source"] = {
+        "type": "saved_result" if effective_saved_result_id else "current",
+        "saved_result_id": effective_saved_result_id,
+    }
+    return result
+
+
+def _list_detection_reports() -> list[dict]:
+    if not REPORTS_ROOT.exists():
+        return []
+    grouped: dict[str, dict] = {}
+    for path in sorted(REPORTS_ROOT.glob("detection-report-*.*"), reverse=True):
+        if path.suffix.lower() not in {".html", ".csv", ".json"}:
+            continue
+        stem = path.stem
+        item = grouped.setdefault(
+            stem,
+            {
+                "id": stem,
+                "created_at": "",
+                "source_summary": "-",
+                "model_summary": "-",
+                "segment_count": None,
+                "detection_frame_count": None,
+                "video_count": None,
+                "files": {},
+            },
+        )
+        kind = path.suffix.lower().lstrip(".")
+        item["files"][kind] = path.name
+        stat = path.stat()
+        item["mtime"] = max(float(item.get("mtime") or 0.0), stat.st_mtime)
+        item["size_bytes"] = int(item.get("size_bytes") or 0) + stat.st_size
+        if kind == "json":
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+            item["created_at"] = str(payload.get("generated_at") or "")
+            item["source_summary"] = str(payload.get("source_summary") or "-")
+            item["model_summary"] = str(payload.get("model_summary") or "-")
+            item["segment_count"] = payload.get("segment_count")
+            item["detection_frame_count"] = payload.get("detection_frame_count")
+            item["video_count"] = payload.get("video_count")
+    reports = list(grouped.values())
+    reports.sort(key=lambda item: (item.get("created_at") or "", item.get("mtime") or 0.0), reverse=True)
+    return reports
+
+
+def _delete_detection_report(report_id: str) -> list[str]:
+    if Path(report_id).name != report_id or not report_id.startswith("detection-report-"):
+        raise ValueError("Invalid report id")
+    deleted: list[str] = []
+    for suffix in (".html", ".csv", ".json"):
+        path = REPORTS_ROOT / f"{report_id}{suffix}"
+        if path.exists():
+            path.unlink()
+            deleted.append(path.name)
+    if not deleted:
+        raise FileNotFoundError("Report not found")
+    return deleted
+
+
+@app.get("/api/pipeline/detect/reports")
+async def pipeline_detect_reports() -> dict:
+    return {"reports": _list_detection_reports()}
+
+
+@app.delete("/api/pipeline/detect/reports/{report_id}")
+async def pipeline_detect_report_delete(report_id: str) -> dict:
+    try:
+        deleted = _delete_detection_report(report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid report id")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {"deleted": deleted, "reports": _list_detection_reports()}
+
+
+@app.get("/api/pipeline/detect/reports/{report_id}/delete/redirect")
+async def pipeline_detect_report_delete_redirect(report_id: str) -> RedirectResponse:
+    try:
+        _delete_detection_report(report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid report id")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/api/pipeline/detect/report/create")
-@app.get("/api/pipeline/detect/report/create")
 @app.post("/api/pipeline/detect/report")
+async def pipeline_detect_report(body: DetectionReportRequest | None = None) -> dict:
+    try:
+        return _generate_detection_report(body.saved_result_id if body else None)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/pipeline/detect/report/create")
 @app.get("/api/pipeline/detect/report")
-async def pipeline_detect_report() -> dict:
+async def pipeline_detect_report_get() -> dict:
     try:
         return _generate_detection_report()
     except FileNotFoundError as exc:
@@ -603,6 +746,42 @@ async def pipeline_detect_report_file(filename: str) -> FileResponse:
             headers={"Content-Disposition": f'inline; filename="{path.name}"'},
         )
     return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+@app.get("/api/pipeline/detect/results/{result_id}/jobs/{job_id}/previews/{filename}")
+async def pipeline_detect_saved_result_preview(result_id: str, job_id: str, filename: str) -> FileResponse:
+    if Path(job_id).name != job_id or Path(filename).name != filename:
+        raise HTTPException(status_code=400, detail="Invalid saved result asset path")
+    try:
+        result_dir = pipeline.saved_result_timeline_path(result_id).parent
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    path = result_dir / "detect_jobs" / job_id / "previews" / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Preview not found")
+    return FileResponse(path)
+
+
+@app.get("/api/pipeline/detect/results/{result_id}/jobs/{job_id}/video")
+async def pipeline_detect_saved_result_video(result_id: str, job_id: str) -> FileResponse:
+    if Path(job_id).name != job_id:
+        raise HTTPException(status_code=400, detail="Invalid saved result asset path")
+    try:
+        result_dir = pipeline.saved_result_timeline_path(result_id).parent
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    path = result_dir / "detect_jobs" / job_id / "video.mp4"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+    )
 
 
 @app.get("/api/pipeline/detect/{job_id}")

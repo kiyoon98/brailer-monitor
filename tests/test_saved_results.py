@@ -78,7 +78,26 @@ class SavedResultsTests(unittest.TestCase):
             self.assertTrue(loaded["loaded"])
             self.assertTrue((pipeline_root / "detect_timeline.json").exists())
             self.assertTrue((pipeline_root / "detect_jobs" / job_id / "previews" / "frame_000001.jpg").exists())
-            self.assertEqual(manager.get_state()["detect_timeline"]["segment_count"], 1)
+            state = manager.get_state()
+            self.assertEqual(state["loaded_saved_result_id"], saved["id"])
+            self.assertEqual(state["loaded_saved_result_name"], "조업선-운반선 적재")
+            self.assertEqual(state["detect_timeline"]["segment_count"], 1)
+
+            compacted = manager.compact_timeline(max_gap_sec=8)
+            self.assertEqual(compacted["postprocess"]["segment_merge_gap_sec"], 8.0)
+            state = manager.get_state()
+            self.assertEqual(state["loaded_saved_result_id"], saved["id"])
+            saved_timeline_path = pipeline_root / "saved_results" / saved["id"] / "detect_timeline.json"
+            saved_timeline = json.loads(saved_timeline_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved_timeline["postprocess"]["segment_merge_gap_sec"], 8.0)
+            saved_metadata_path = pipeline_root / "saved_results" / saved["id"] / "metadata.json"
+            saved_metadata = json.loads(saved_metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved_metadata["postprocess"]["segment_merge_gap_sec"], 8.0)
+
+            manager.reset_timeline()
+            state = manager.get_state()
+            self.assertIsNone(state["loaded_saved_result_id"])
+            self.assertIsNone(state["loaded_saved_result_name"])
 
 
 if __name__ == "__main__":

@@ -2,15 +2,68 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
+import cv2
 import numpy as np
 
 from brailer_monitor.detector import Detection
-from brailer_monitor.video_detect import _detection_to_dict, merge_ensemble_detections
+from brailer_monitor.video_detect import _detection_to_dict, assess_video_darkness, detect_video, merge_ensemble_detections
 
 
 class VideoDetectTests(unittest.TestCase):
+    def _write_test_video(self, path: Path, frames: list[np.ndarray], *, fps: float = 5.0) -> None:
+        height, width = frames[0].shape[:2]
+        writer = cv2.VideoWriter(
+            str(path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width, height),
+        )
+        self.assertTrue(writer.isOpened())
+        for frame in frames:
+            writer.write(frame)
+        writer.release()
+
+    def test_detect_video_skips_clearly_dark_video_before_model_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_path = root / "dark.mp4"
+            frames = [np.full((32, 32, 3), 8, dtype=np.uint8) for _ in range(6)]
+            self._write_test_video(video_path, frames)
+
+            manifest = detect_video(
+                video_path,
+                root / "missing-model.pt",
+                output_dir=root / "out",
+                skip_dark_video=True,
+            )
+
+            self.assertTrue(manifest["skipped"])
+            self.assertEqual(manifest["skip_reason"], "dark_video")
+            self.assertEqual(manifest["frames_processed"], 0)
+            self.assertEqual(manifest["frames"], [])
+            self.assertTrue((root / "out" / "detections.json").exists())
+
+    def test_assess_video_darkness_requires_all_samples_dark(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_path = root / "mixed.mp4"
+            dark = np.full((32, 32, 3), 8, dtype=np.uint8)
+            bright = np.full((32, 32, 3), 160, dtype=np.uint8)
+            self._write_test_video(video_path, [dark, dark, bright, dark, dark])
+
+            cap = cv2.VideoCapture(str(video_path))
+            try:
+                assessment = assess_video_darkness(cap, 5)
+            finally:
+                cap.release()
+
+            self.assertEqual(assessment["sample_count"], 5)
+            self.assertFalse(assessment["all_samples_dark"])
+
     def test_merge_ensemble_detections_uses_highest_confidence_and_model_labels(self) -> None:
         low = Detection(
             bbox_xyxy=(0.0, 0.0, 100.0, 100.0),

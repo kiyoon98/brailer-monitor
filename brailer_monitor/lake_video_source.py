@@ -22,7 +22,7 @@ DEFAULT_SECOND_SUFFIXES = ("16",)
 DEFAULT_PROBE_TIMEOUT_SEC = 2.0
 DEFAULT_PROBE_WORKERS = 16
 
-DEFAULT_BASE_HOST = "http://10.2.10.158:8041/media/"
+DEFAULT_BASE_HOST = "http://10.2.10.158:8041/media/em_data/"
 DEFAULT_LAKE_COMPONENTS: dict[str, dict[str, Any]] = {
     "media": {
         "label": "미디어 폴더",

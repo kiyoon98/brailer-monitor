@@ -109,11 +109,12 @@
         <label>Confidence <input id="confidence" type="number" value="0.6" min="0.05" max="1" step="0.05" /></label>
         <label>추론 크기 <input id="detectImgsz" type="number" value="416" min="320" max="1280" step="32" /></label>
         <label><input id="useSam" type="checkbox" /> 정밀 마스크(SAM)</label>
+        <label><input id="skipDarkVideo" type="checkbox" checked /> 어두운 영상 건너뛰기(파일/Lake)</label>
       </div>
       <div class="row detect-actions">
         <button id="detectBtn" type="button" disabled>탐지 시작</button>
         <button id="stopDetectBtn" type="button" class="secondary danger hidden">탐지 중지</button>
-        <button id="resetTimelineBtn" type="button" class="secondary">결과 초기화</button>
+        <a id="resetTimelineBtn" class="button-link secondary" href="/api/pipeline/detect/timeline/reset/redirect" role="button" autocomplete="off">결과 초기화</a>
       </div>
       <div id="detectProgressWrap" class="progress-wrap hidden">
         <div class="progress-bar"><div id="detectProgressBar" class="progress-fill"></div></div>
@@ -131,11 +132,14 @@
         <select id="savedResultSelect" class="saved-result-select"></select>
         <button id="loadResultBtn" type="button" class="secondary">저장 결과 열기</button>
         <span id="savedResultStatus" class="hint"></span>
-        <button id="compactTimelineBtn" type="button" class="secondary">10초 이내 구간 합치기</button>
+        <label><input id="postMergeSegments" type="checkbox" checked /> 8초 이내 구간 병합</label>
+        <label><input id="postRemovePositionOutliers" type="checkbox" checked /> 위치 이상 제거</label>
+        <label><input id="postRemoveSizeOutliers" type="checkbox" checked /> 크기 이상 제거</label>
+        <label><input id="postRemoveTallThinBoxes" type="checkbox" checked /> 세로형 빈 그물 제거</label>
+        <label><input id="postRemoveStaticShortTracks" type="checkbox" checked /> 3-4초 정지 제거</label>
+        <label><input id="postRemoveColorOutliers" type="checkbox" checked /> 색상 이상 제거</label>
+        <button id="compactTimelineBtn" type="button" class="secondary">후처리 적용</button>
         <span id="compactTimelineStatus" class="hint"></span>
-        <button id="generateReportBtn" type="button" class="secondary">외부 문서 생성</button>
-        <span id="reportStatus" class="hint"></span>
-        <div id="reportLinks" class="report-links"></div>
       </div>
       <div id="timelineAxis" class="timeline-axis hidden">
         <div class="timeline-toolbar">
@@ -159,6 +163,17 @@
       </div>
       <div id="frameResults" class="timeline-segment-list"></div>
       <button id="detectFrameMore" type="button" class="secondary hidden">더 보기</button>
+    </section>
+
+    <section class="panel full">
+      <h2>외부 문서 리포트</h2>
+      <div class="report-actions">
+        <button id="generateReportBtn" type="button" class="secondary">외부 문서 생성</button>
+        <button id="refreshReportsBtn" type="button" class="secondary">리포트 목록 새로고침</button>
+        <span id="reportStatus" class="hint"></span>
+        <div id="reportLinks" class="report-links"></div>
+      </div>
+      <div id="reportList" class="report-list"></div>
     </section>
 
     <section class="panel full">
@@ -224,6 +239,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
-  <script src="/static/detect.js?v=61"></script>
+  <script src="/static/detect.js?v=72"></script>
 </body>
 </html>

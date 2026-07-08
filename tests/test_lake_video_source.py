@@ -26,7 +26,7 @@ class LakeVideoSourceTests(unittest.TestCase):
         self.jjr = LakeVideoConfig(
             profile_id="jjr",
             label="JJR-102283 stream04",
-            base_url="http://10.2.10.158:8041/media/lake_win/2026_decrypted/",
+            base_url="http://10.2.10.158:8041/media/em_data/lake_win/2026_decrypted/",
             file_prefix="JJR-102283_stream04",
             year=2026,
             minute_slots=(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55),
@@ -35,7 +35,7 @@ class LakeVideoSourceTests(unittest.TestCase):
         self.lake = LakeVideoConfig(
             profile_id="lake_aurora",
             label="LAKE AURORA stream03",
-            base_url="http://10.2.10.158:8041/media/lake_win/2025_decrypted/",
+            base_url="http://10.2.10.158:8041/media/em_data/lake_win/2025_decrypted/",
             file_prefix="LAKE_AURORA_stream03",
             year=2025,
             minute_slots=(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55),

@@ -1,5 +1,5 @@
 {
-  "base_host": "http://10.2.10.158:8041/media/",
+  "base_host": "http://10.2.10.158:8041/media/em_data/",
   "minute_offsets": [0, 1, 2, 3, 4],
   "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
   "components": {

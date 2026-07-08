@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="0")
     parser.add_argument("--segmentation", choices=["auto", "yes", "no"], default="auto")
     parser.add_argument("--sam", choices=["yes", "no"], default="no")
+    parser.add_argument("--skip-dark-video", choices=["yes", "no"], default="no")
     parser.add_argument("--progress-file", required=True)
     parser.add_argument("--events-file")
     parser.add_argument("--stop-file")
@@ -92,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 
     use_segmentation = None if args.segmentation == "auto" else args.segmentation == "yes"
     use_sam = args.sam == "yes"
+    skip_dark_video = args.skip_dark_video == "yes"
     model_specs = None
     if args.model_specs_file:
         model_specs = json.loads(Path(args.model_specs_file).read_text(encoding="utf-8"))
@@ -159,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
                 device=device,
                 use_segmentation=use_segmentation,
                 use_sam=use_sam,
+                skip_dark_video=skip_dark_video,
                 on_progress=on_progress,
                 on_detection=on_detection,
                 should_cancel=should_cancel,
@@ -189,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 device="cpu",
                 use_segmentation=use_segmentation,
                 use_sam=use_sam,
+                skip_dark_video=skip_dark_video,
                 on_progress=on_progress,
                 on_detection=on_detection,
                 should_cancel=should_cancel,

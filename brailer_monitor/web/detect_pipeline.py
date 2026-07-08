@@ -107,6 +107,8 @@ class PipelineState:
     detect_overlay_height: int = 0
     detect_overlay_detections: list[dict[str, Any]] | None = None
     detect_overlay_updated_at: str | None = None
+    loaded_saved_result_id: str | None = None
+    loaded_saved_result_name: str | None = None
     detect_error: str | None = None
     updated_at: str = ""
 
@@ -620,6 +622,12 @@ class DetectPipelineManager:
         job_id = state.detect_job_id
         if state.detect_status != "running" or not job_id:
             return
+        thread = self._detect_threads.get(job_id)
+        if thread is not None and thread.is_alive():
+            return
+        proc = self._detect_procs.get(job_id)
+        if proc is not None and proc.poll() is None:
+            return
 
         job_dir = self._job_dir(job_id)
         manifest_path = job_dir / "detections.json"
@@ -661,6 +669,8 @@ class DetectPipelineManager:
             job_id=job_id,
             video_name=video_name,
             manifest=manifest,
+            replace_job=True,
+            replace_video=True,
         )
 
         job.status = "completed"
@@ -718,6 +728,24 @@ class DetectPipelineManager:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    def _clear_loaded_saved_result(self, state: PipelineState) -> None:
+        state.loaded_saved_result_id = None
+        state.loaded_saved_result_name = None
+
+    def loaded_saved_result_id(self) -> str | None:
+        state = self._load_state()
+        result_id = state.loaded_saved_result_id
+        if not result_id:
+            return None
+        try:
+            self.saved_result_timeline_path(result_id)
+        except (FileNotFoundError, ValueError):
+            state.loaded_saved_result_id = None
+            state.loaded_saved_result_name = None
+            self._save_state(state)
+            return None
+        return result_id
+
     def get_state(self) -> dict[str, Any]:
         self._recover_stale_cancel()
         self._recover_stale_train()
@@ -753,13 +781,69 @@ class DetectPipelineManager:
         reset_timeline(self._timeline_path)
         state = self._load_state()
         state.detect_timeline_events = 0
+        if not _detect_is_active(state, threads=self._detect_threads):
+            state.detect_status = "idle"
+            state.detect_job_id = None
+            state.detect_video_name = None
+            state.detect_progress_pct = 0.0
+            state.detect_processed_frames = 0
+            state.detect_total_frames = 0
+            state.detect_frames_with_objects = 0
+            state.detect_queue_pending = 0
+            state.detect_batch_total = 0
+            state.detect_batch_done = 0
+            state.detect_batch_index = 0
+            state.detect_error = None
+            self._detect_queue.clear()
+            self._batch_total = 0
+            self._batch_done = 0
+            self._clear_detect_overlay(state)
+        self._clear_loaded_saved_result(state)
         self._save_state(state)
         return timeline_summary(self._timeline_path)
 
-    def compact_timeline(self, *, max_gap_sec: float = 10.0) -> dict[str, Any]:
-        result = compact_timeline_segments(self._timeline_path, max_gap_sec=max_gap_sec)
+    def compact_timeline(
+        self,
+        *,
+        max_gap_sec: float = 8.0,
+        merge_segments: bool = True,
+        remove_position_outliers: bool = False,
+        remove_size_outliers: bool = False,
+        remove_tall_thin_boxes: bool = False,
+        remove_static_short_tracks: bool = False,
+        remove_color_outliers: bool = False,
+    ) -> dict[str, Any]:
+        result = compact_timeline_segments(
+            self._timeline_path,
+            max_gap_sec=max_gap_sec,
+            merge_segments=merge_segments,
+            remove_position_outliers=remove_position_outliers,
+            remove_size_outliers=remove_size_outliers,
+            remove_tall_thin_boxes=remove_tall_thin_boxes,
+            remove_static_short_tracks=remove_static_short_tracks,
+            remove_color_outliers=remove_color_outliers,
+            jobs_root=self._detect_jobs_dir(),
+        )
         state = self._load_state()
         state.detect_timeline_events = result["event_count"]
+        if state.loaded_saved_result_id:
+            result_dir = self._saved_result_dir(state.loaded_saved_result_id)
+            timeline_dst = result_dir / "detect_timeline.json"
+            meta_path = result_dir / "metadata.json"
+            if timeline_dst.exists() and meta_path.exists():
+                shutil.copy2(self._timeline_path, timeline_dst)
+                metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+                metadata["segment_count"] = result["segment_count"]
+                metadata["event_count"] = result["event_count"]
+                metadata["video_count"] = result["video_count"]
+                metadata["postprocess"] = result.get("postprocess")
+                metadata["updated_at"] = _now_iso()
+                meta_path.write_text(
+                    json.dumps(metadata, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            else:
+                self._clear_loaded_saved_result(state)
         self._save_state(state)
         return result
 
@@ -796,6 +880,14 @@ class DetectPipelineManager:
             metadata["id"] = directory.name
             results.append(metadata)
         return results
+
+    def saved_result_timeline_path(self, result_id: str) -> Path:
+        result_dir = self._saved_result_dir(result_id)
+        timeline_path = result_dir / "detect_timeline.json"
+        meta_path = result_dir / "metadata.json"
+        if not timeline_path.exists() or not meta_path.exists():
+            raise FileNotFoundError("저장된 탐지 결과를 찾지 못했습니다.")
+        return timeline_path
 
     def save_current_results(self, name: str) -> dict[str, Any]:
         clean_name = name.strip()
@@ -846,6 +938,8 @@ class DetectPipelineManager:
             except Exception:
                 shutil.rmtree(result_dir, ignore_errors=True)
                 raise
+            self._clear_loaded_saved_result(state)
+            self._save_state(state)
             return metadata
 
     def load_saved_results(self, result_id: str) -> dict[str, Any]:
@@ -860,6 +954,7 @@ class DetectPipelineManager:
             meta_path = result_dir / "metadata.json"
             if not timeline_src.exists() or not meta_path.exists():
                 raise FileNotFoundError("저장된 탐지 결과를 찾지 못했습니다.")
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
 
             backup_dir = self._restore_backups_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
             backup_dir.mkdir(parents=True, exist_ok=True)
@@ -883,6 +978,8 @@ class DetectPipelineManager:
                 state.detect_video_name = None
                 state.detect_batch_index = 0
                 state.detect_queue_pending = 0
+                state.loaded_saved_result_id = result_dir.name
+                state.loaded_saved_result_name = metadata.get("name") or result_dir.name
                 self._clear_detect_overlay(state)
                 self._save_state(state)
             except Exception:
@@ -896,7 +993,6 @@ class DetectPipelineManager:
                     shutil.move(str(backup_dir / "detect_jobs"), str(current_jobs))
                 raise
 
-            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
             metadata["id"] = result_dir.name
             metadata["loaded"] = True
             metadata["backup_id"] = backup_dir.name
@@ -1074,6 +1170,7 @@ class DetectPipelineManager:
         confidence: float = 0.6,
         imgsz: int = 416,
         use_sam: bool = False,
+        skip_dark_video: bool = True,
         device: str | int = 0,
     ) -> DetectJob | dict[str, Any]:
         return self.start_detection_batch(
@@ -1084,6 +1181,7 @@ class DetectPipelineManager:
             confidence=confidence,
             imgsz=imgsz,
             use_sam=use_sam,
+            skip_dark_video=skip_dark_video,
             device=device,
         )
 
@@ -1113,6 +1211,7 @@ class DetectPipelineManager:
         confidence: float = 0.6,
         imgsz: int = 416,
         use_sam: bool = False,
+        skip_dark_video: bool = True,
         device: str | int = 0,
     ) -> dict[str, Any]:
         if not videos:
@@ -1143,6 +1242,7 @@ class DetectPipelineManager:
                 state.detect_processed_frames = 0
                 state.detect_total_frames = 0
                 state.detect_progress_pct = 0.0
+                self._clear_loaded_saved_result(state)
             else:
                 self._batch_total += len(prepared_videos)
                 state.detect_batch_total = self._batch_total
@@ -1156,6 +1256,7 @@ class DetectPipelineManager:
                     "confidence": confidence,
                     "imgsz": imgsz,
                     "use_sam": use_sam,
+                    "skip_dark_video": skip_dark_video,
                     "device": device,
                     "batch_index": batch_index_base + index + 1,
                 }
@@ -1302,6 +1403,7 @@ class DetectPipelineManager:
         state.detect_overlay_detections = None
         state.detect_overlay_updated_at = None
         state.detect_error = None
+        self._clear_loaded_saved_result(state)
         self._save_state(state)
 
         thread = threading.Thread(
@@ -1328,6 +1430,7 @@ class DetectPipelineManager:
         confidence: float = item["confidence"]
         imgsz: int = int(item.get("imgsz") or 416)
         use_sam: bool = bool(item.get("use_sam", False))
+        skip_dark_video: bool = bool(item.get("skip_dark_video", False))
         device: str | int = item["device"]
 
         job_id = uuid.uuid4().hex[:12]
@@ -1345,6 +1448,7 @@ class DetectPipelineManager:
         state.detect_total_frames = 0
         state.detect_progress_pct = 0.0
         state.detect_error = None
+        self._clear_loaded_saved_result(state)
         self._save_state(state)
 
         if item.get("remote_url"):
@@ -1383,6 +1487,7 @@ class DetectPipelineManager:
             "video_name": video_name,
             "video_start": video_start.isoformat() if video_start else None,
             "models": model_specs,
+            "skip_dark_video": skip_dark_video,
         }
         (directory / "video_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -1409,6 +1514,7 @@ class DetectPipelineManager:
         state.detect_queue_pending = len(self._detect_queue)
         state.detect_batch_total = self._batch_total
         state.detect_batch_done = self._batch_done
+        self._clear_loaded_saved_result(state)
         planned = self._planned_frame_count(target_video, frame_stride)
         job.total_frames = planned
         self._save_job(job)
@@ -1419,7 +1525,19 @@ class DetectPipelineManager:
 
         thread = threading.Thread(
             target=self._run_detection,
-            args=(job_id, target_video, model_path, model_specs, frame_stride, confidence, imgsz, use_sam, device, video_name),
+            args=(
+                job_id,
+                target_video,
+                model_path,
+                model_specs,
+                frame_stride,
+                confidence,
+                imgsz,
+                use_sam,
+                skip_dark_video,
+                device,
+                video_name,
+            ),
             daemon=True,
         )
         self._detect_threads[job_id] = thread
@@ -1473,6 +1591,7 @@ class DetectPipelineManager:
         confidence: float,
         imgsz: int,
         use_sam: bool,
+        skip_dark_video: bool,
         device: str | int,
     ) -> dict[str, Any]:
         """Run YOLO inference in a separate process so a CUDA crash can't wedge
@@ -1507,6 +1626,8 @@ class DetectPipelineManager:
             str(imgsz),
             "--sam",
             "yes" if use_sam else "no",
+            "--skip-dark-video",
+            "yes" if skip_dark_video else "no",
             "--device",
             str(device),
             "--progress-file",
@@ -1608,6 +1729,15 @@ class DetectPipelineManager:
             if self._detection_cancelled():
                 raise DetectionCancelled("Detection cancelled by user")
 
+            manifest_path = job_dir / "detections.json"
+            if proc.returncode != 0 and manifest_path.exists():
+                logger.warning(
+                    "Detection worker for job %s exited with code %s after writing manifest; using manifest.",
+                    job_id,
+                    proc.returncode,
+                )
+                return json.loads(manifest_path.read_text(encoding="utf-8"))
+
             if proc.returncode != 0:
                 detail = ""
                 if error_file.exists():
@@ -1618,7 +1748,6 @@ class DetectPipelineManager:
                     detail or f"탐지 작업이 코드 {proc.returncode}로 종료되었습니다."
                 )
 
-            manifest_path = job_dir / "detections.json"
             if not manifest_path.exists():
                 raise RuntimeError("탐지 결과 파일(detections.json)이 생성되지 않았습니다.")
             return json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1812,6 +1941,7 @@ class DetectPipelineManager:
         confidence: float,
         imgsz: int,
         use_sam: bool,
+        skip_dark_video: bool,
         device: str | int,
         video_name: str,
     ) -> None:
@@ -1834,6 +1964,7 @@ class DetectPipelineManager:
                     confidence,
                     imgsz,
                     use_sam,
+                    skip_dark_video,
                     device,
                 )
             except RuntimeError as exc:
@@ -1860,6 +1991,7 @@ class DetectPipelineManager:
                     confidence,
                     imgsz,
                     use_sam,
+                    skip_dark_video,
                     "cpu",
                 )
             if self._detection_cancelled():
@@ -1878,6 +2010,7 @@ class DetectPipelineManager:
                 video_name=video_name,
                 manifest=manifest,
                 replace_job=True,
+                replace_video=True,
             )
 
             job = self.get_detect_job(job_id)

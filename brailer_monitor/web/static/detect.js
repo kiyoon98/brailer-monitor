@@ -52,6 +52,7 @@ const els = {
   confidence: document.getElementById("confidence"),
   detectImgsz: document.getElementById("detectImgsz"),
   useSam: document.getElementById("useSam"),
+  skipDarkVideo: document.getElementById("skipDarkVideo"),
   detectBtn: document.getElementById("detectBtn"),
   stopDetectBtn: document.getElementById("stopDetectBtn"),
   resetTimelineBtn: document.getElementById("resetTimelineBtn"),
@@ -60,11 +61,19 @@ const els = {
   savedResultSelect: document.getElementById("savedResultSelect"),
   loadResultBtn: document.getElementById("loadResultBtn"),
   savedResultStatus: document.getElementById("savedResultStatus"),
+  postMergeSegments: document.getElementById("postMergeSegments"),
+  postRemovePositionOutliers: document.getElementById("postRemovePositionOutliers"),
+  postRemoveSizeOutliers: document.getElementById("postRemoveSizeOutliers"),
+  postRemoveTallThinBoxes: document.getElementById("postRemoveTallThinBoxes"),
+  postRemoveStaticShortTracks: document.getElementById("postRemoveStaticShortTracks"),
+  postRemoveColorOutliers: document.getElementById("postRemoveColorOutliers"),
   compactTimelineBtn: document.getElementById("compactTimelineBtn"),
   compactTimelineStatus: document.getElementById("compactTimelineStatus"),
   generateReportBtn: document.getElementById("generateReportBtn"),
+  refreshReportsBtn: document.getElementById("refreshReportsBtn"),
   reportStatus: document.getElementById("reportStatus"),
   reportLinks: document.getElementById("reportLinks"),
+  reportList: document.getElementById("reportList"),
   detectStatus: document.getElementById("detectStatus"),
   detectProgressWrap: document.getElementById("detectProgressWrap"),
   detectProgressBar: document.getElementById("detectProgressBar"),
@@ -138,6 +147,7 @@ let detectFrameTotal = 0;
 let lastTimelineEventCount = 0;
 let lastTimelineRefreshAt = 0;
 let timelineRefreshPending = false;
+let resetTimelineActive = false;
 let timelineRange = null;
 let timelineAxisSegments = [];
 let timelineZoom = 1;
@@ -146,6 +156,7 @@ let lakeVideosReady = 0;
 let lakeSpec = null;
 let detectFrameJobId = null;
 let lastPipelineState = null;
+let currentLoadedResultId = null;
 let importFramesLoaded = false;
 let importPanelExpanded = false;
 let labelSummaryKey = "";
@@ -990,6 +1001,7 @@ async function discoverLakeVideos() {
 
 function beginDetectSession(batchTotal, queuePending = Math.max(0, batchTotal - 1)) {
   clearStreamDetectionOverlay();
+  currentLoadedResultId = null;
   detectSession += 1;
   detectSessionActive = true;
   handledDetectJobId = null;
@@ -1408,6 +1420,18 @@ function trainStatusText(state) {
 
 function renderPipelineState(state) {
   const meta = state.dataset_meta;
+  currentLoadedResultId = state.loaded_saved_result_id || null;
+  if (els.resetTimelineBtn) {
+    els.resetTimelineBtn.disabled = resetTimelineActive;
+    if (resetTimelineActive) {
+      els.resetTimelineBtn.setAttribute("aria-disabled", "true");
+    } else {
+      els.resetTimelineBtn.removeAttribute("aria-disabled");
+    }
+  }
+  if (els.savedResultSelect && currentLoadedResultId) {
+    els.savedResultSelect.value = currentLoadedResultId;
+  }
 
   if (state.models !== undefined) {
     renderModels(state.models, state.active_model_id);
@@ -2026,68 +2050,96 @@ function maybeRefreshTimelineFromState(state) {
   });
 }
 
-async function resetTimeline() {
+async function resetTimeline(event) {
+  event?.preventDefault();
+  if (resetTimelineActive) return;
   const detectionRunning = isDetectLive(lastPipelineState) || isDetectBusy(lastPipelineState);
   const message = detectionRunning
     ? "탐지가 진행 중입니다. 누적된 결과만 초기화하고 탐지는 계속됩니다. 진행할까요?"
     : "누적 탐지 결과를 모두 초기화할까요?";
   if (!confirm(message)) return;
 
+  resetTimelineActive = true;
+  if (els.resetTimelineBtn) {
+    els.resetTimelineBtn.disabled = true;
+    els.resetTimelineBtn.setAttribute("aria-disabled", "true");
+  }
   try {
     await api("/api/pipeline/detect/timeline/reset", { method: "POST" });
+    detectFrameOffset = 0;
+    detectFrameTotal = 0;
+    detectFrameJobId = null;
+    currentLoadedResultId = null;
+    timelineRange = null;
+    timelineAxisSegments = [];
+    timelineZoom = 1;
+    if (els.frameResults) els.frameResults.innerHTML = "";
+    if (els.frameCount) els.frameCount.textContent = "0";
+    els.timelineAxis?.classList.add("hidden");
+    if (els.timelineRail) els.timelineRail.innerHTML = "";
+    if (els.timelineTicks) els.timelineTicks.innerHTML = "";
+    els.detectFrameMore?.classList.add("hidden");
+
+    if (detectionRunning) {
+      // Detection still running: only the accumulated display was cleared.
+      showDetectProgressFromState(lastPipelineState);
+    } else {
+      // Idle: don't strand the "탐지 시작" button — make sure it is usable again.
+      handledDetectJobId = null;
+      activeDetectJobId = null;
+      endDetectSession();
+      setStatus(els.detectStatus, "탐지 결과가 초기화되었습니다.", "ok");
+      updateDetectButtonState();
+    }
   } catch (err) {
     setStatus(els.detectStatus, err.message, "error");
-    return;
-  }
-
-  detectFrameOffset = 0;
-  detectFrameTotal = 0;
-  detectFrameJobId = null;
-  timelineRange = null;
-  timelineAxisSegments = [];
-  timelineZoom = 1;
-  els.frameResults.innerHTML = "";
-  if (els.frameCount) els.frameCount.textContent = "0";
-  els.timelineAxis?.classList.add("hidden");
-  if (els.timelineRail) els.timelineRail.innerHTML = "";
-  if (els.timelineTicks) els.timelineTicks.innerHTML = "";
-  els.detectFrameMore?.classList.add("hidden");
-
-  if (detectionRunning) {
-    // Detection still running: only the accumulated display was cleared.
-    showDetectProgressFromState(lastPipelineState);
-  } else {
-    // Idle: don't strand the "탐지 시작" button — make sure it is usable again.
-    handledDetectJobId = null;
-    activeDetectJobId = null;
-    endDetectSession();
-    setStatus(els.detectStatus, "탐지 결과가 초기화되었습니다.", "ok");
-    updateDetectButtonState();
+  } finally {
+    resetTimelineActive = false;
+    if (els.resetTimelineBtn) {
+      els.resetTimelineBtn.disabled = false;
+      els.resetTimelineBtn.removeAttribute("aria-disabled");
+    }
   }
 }
 
 async function compactTimeline() {
   if (!els.compactTimelineBtn) return;
   const detectionRunning = isDetectLive(lastPipelineState) || isDetectBusy(lastPipelineState);
-  if (detectionRunning && !confirm("탐지가 진행 중입니다. 현재까지 누적된 구간을 10초 기준으로 정리할까요?")) {
+  if (detectionRunning && !confirm("탐지가 진행 중입니다. 현재까지 누적된 결과에 후처리를 적용할까요?")) {
     return;
   }
 
   els.compactTimelineBtn.disabled = true;
-  if (els.compactTimelineStatus) els.compactTimelineStatus.textContent = "구간 정리 중...";
+  if (els.compactTimelineStatus) els.compactTimelineStatus.textContent = "후처리 중...";
   try {
+    const body = {
+      max_gap_sec: 8,
+      merge_segments: !!els.postMergeSegments?.checked,
+      remove_position_outliers: !!els.postRemovePositionOutliers?.checked,
+      remove_size_outliers: !!els.postRemoveSizeOutliers?.checked,
+      remove_tall_thin_boxes: !!els.postRemoveTallThinBoxes?.checked,
+      remove_static_short_tracks: !!els.postRemoveStaticShortTracks?.checked,
+      remove_color_outliers: !!els.postRemoveColorOutliers?.checked,
+    };
     const result = await api("/api/pipeline/detect/timeline/compact", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ max_gap_sec: 10 }),
+      body: JSON.stringify(body),
     });
     const timeline = result.timeline || {};
     await loadTimeline({ reset: true });
+    const { state } = await api("/api/pipeline/state");
+    lastPipelineState = state;
+    currentLoadedResultId = state.loaded_saved_result_id || currentLoadedResultId;
+    renderPipelineState(state);
     const before = timeline.before_segment_count ?? 0;
     const after = timeline.segment_count ?? 0;
     const merged = timeline.merged_segment_count ?? Math.max(0, before - after);
+    const removed = timeline.removed_detection_count ?? 0;
+    const removedEvents = timeline.removed_event_count ?? 0;
     if (els.compactTimelineStatus) {
-      els.compactTimelineStatus.textContent = `정리 완료 · ${before}개 -> ${after}개 · ${merged}개 병합`;
+      els.compactTimelineStatus.textContent =
+        `후처리 완료 · 구간 ${before}개 -> ${after}개 · ${merged}개 병합 · 탐지 ${removed}개 제거 · 프레임 ${removedEvents}개 제거`;
     }
   } catch (err) {
     if (els.compactTimelineStatus) els.compactTimelineStatus.textContent = err.message;
@@ -2120,6 +2172,9 @@ async function loadSavedResultsList() {
       option.textContent = savedResultLabel(item);
       els.savedResultSelect.appendChild(option);
     }
+    if (currentLoadedResultId) {
+      els.savedResultSelect.value = currentLoadedResultId;
+    }
   } catch (err) {
     if (els.savedResultStatus) els.savedResultStatus.textContent = err.message;
   }
@@ -2147,6 +2202,7 @@ async function saveCurrentDetectionResults() {
     if (els.saveResultName) els.saveResultName.value = "";
     await loadSavedResultsList();
     if (els.savedResultSelect) els.savedResultSelect.value = result.id;
+    currentLoadedResultId = null;
   } catch (err) {
     if (els.savedResultStatus) els.savedResultStatus.textContent = err.message;
   } finally {
@@ -2170,6 +2226,7 @@ async function loadSelectedDetectionResults() {
     const { result } = await api(`/api/pipeline/detect/results/${encodeURIComponent(resultId)}/load`, {
       method: "POST",
     });
+    currentLoadedResultId = result.id || resultId;
     detectFrameOffset = 0;
     detectFrameTotal = 0;
     detectFrameJobId = null;
@@ -2202,16 +2259,90 @@ function renderReportLinks(files) {
     .join("");
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function reportFileLinks(files, reportId = "") {
+  const labels = { html: "HTML", csv: "CSV", json: "JSON" };
+  const links = Object.entries(files || {})
+    .map(([kind, filename]) => {
+      const href = `/api/pipeline/detect/report/${encodeURIComponent(filename)}`;
+      const target = kind === "html" ? ' target="_blank" rel="noreferrer"' : "";
+      return `<a href="${href}"${target}>${labels[kind] || escapeHtml(kind)}</a>`;
+    });
+  if (reportId) {
+    const deleteHref = `/api/pipeline/detect/reports/${encodeURIComponent(reportId)}/delete/redirect`;
+    links.push(`<a class="danger-link" href="${deleteHref}">Delete</a>`);
+  }
+  return links.join("");
+}
+
+function renderReportList(reports) {
+  if (!els.reportList) return;
+  if (!reports?.length) {
+    els.reportList.innerHTML = '<div class="report-empty hint">생성된 리포트가 없습니다.</div>';
+    return;
+  }
+  els.reportList.innerHTML = reports
+    .map((report) => {
+      const created = report.created_at
+        ? report.created_at.slice(0, 19).replace("T", " ")
+        : report.id;
+      const source = report.source_summary || "-";
+      const models = report.model_summary || "-";
+      const segments = report.segment_count ?? "-";
+      const frames = report.detection_frame_count ?? "-";
+      const videos = report.video_count ?? "-";
+      return `
+        <div class="report-item">
+          <div class="report-item-main">
+            <div class="report-item-title">${escapeHtml(created)}</div>
+            <div class="report-item-meta">소스 ${escapeHtml(source)} · 모델 ${escapeHtml(models)}</div>
+            <div class="report-item-meta">구간 ${escapeHtml(segments)} · 탐지 프레임 ${escapeHtml(frames)} · 영상 ${escapeHtml(videos)}</div>
+          </div>
+          <div class="report-item-actions">
+            <div class="report-links">${reportFileLinks(report.files, report.id)}</div>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+async function loadReportList() {
+  if (!els.reportList) return;
+  try {
+    const { reports } = await api("/api/pipeline/detect/reports");
+    renderReportList(reports || []);
+  } catch (err) {
+    els.reportList.innerHTML = `<div class="report-empty hint">${escapeHtml(err.message)}</div>`;
+  }
+}
+
 async function generateDetectionReport() {
   if (!els.generateReportBtn) return;
   els.generateReportBtn.disabled = true;
   if (els.reportStatus) els.reportStatus.textContent = "문서 생성 중...";
   if (els.reportLinks) els.reportLinks.innerHTML = "";
   try {
-    const result = await api("/api/pipeline/detect/report/create", { method: "POST" });
+    const savedResultId = currentLoadedResultId || lastPipelineState?.loaded_saved_result_id || null;
+    const body = savedResultId ? { saved_result_id: savedResultId } : {};
+    const result = await api("/api/pipeline/detect/report/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
     renderReportLinks(result.files);
+    await loadReportList();
     const count = result.report?.segment_count ?? 0;
-    if (els.reportStatus) els.reportStatus.textContent = `생성 완료 · ${count}개 구간`;
+    const source = result.source?.type === "saved_result" ? " · 열린 저장 결과 기준" : "";
+    if (els.reportStatus) els.reportStatus.textContent = `생성 완료 · ${count}개 구간${source}`;
   } catch (err) {
     if (els.reportStatus) els.reportStatus.textContent = err.message;
   } finally {
@@ -2421,11 +2552,11 @@ els.detectFrameMore.addEventListener("click", () => {
   loadTimeline({ reset: false });
 });
 
-els.resetTimelineBtn?.addEventListener("click", resetTimeline);
 els.saveResultBtn?.addEventListener("click", saveCurrentDetectionResults);
 els.loadResultBtn?.addEventListener("click", loadSelectedDetectionResults);
 els.compactTimelineBtn?.addEventListener("click", compactTimeline);
 els.generateReportBtn?.addEventListener("click", generateDetectionReport);
+els.refreshReportsBtn?.addEventListener("click", loadReportList);
 
 els.refreshModelsBtn?.addEventListener("click", () => {
   modelListKey = "";
@@ -2807,6 +2938,7 @@ els.detectBtn.addEventListener("click", async () => {
           confidence: Number(els.confidence.value),
           imgsz: Number(els.detectImgsz?.value || 416),
           use_sam: !!els.useSam?.checked,
+          skip_dark_video: !!els.skipDarkVideo?.checked,
           check_exists: true,
           model_ids: modelIds,
         }),
@@ -2872,6 +3004,7 @@ els.detectBtn.addEventListener("click", async () => {
   form.append("confidence", els.confidence.value);
   form.append("imgsz", els.detectImgsz?.value || "416");
   form.append("use_sam", els.useSam?.checked ? "true" : "false");
+  form.append("skip_dark_video", els.skipDarkVideo?.checked ? "true" : "false");
   for (const modelId of modelIds) {
     form.append("model_ids", modelId);
   }
@@ -2937,5 +3070,10 @@ api("/api/pipeline/state")
   });
 
 loadSavedResultsList();
+loadReportList();
+if (els.resetTimelineBtn) {
+  els.resetTimelineBtn.disabled = false;
+  els.resetTimelineBtn.removeAttribute("aria-disabled");
+}
 setDetectSourceMode("upload");
 loadLakeConfig();

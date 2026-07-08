@@ -34,6 +34,16 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(timeline["videos"], [])
             self.assertEqual(timeline["events"], [])
 
+    def test_load_timeline_treats_empty_file_as_empty_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            path.write_text("", encoding="utf-8")
+
+            timeline = load_timeline(path)
+
+            self.assertEqual(timeline["videos"], [])
+            self.assertEqual(timeline["events"], [])
+
     def test_merge_and_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"
@@ -70,6 +80,40 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(video["duration_sec"], 30.0)
             reset_timeline(path)
             self.assertEqual(list_timeline(path)["total"], 0)
+
+    def test_merge_job_manifest_preserves_dark_skip_video_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            merge_job_manifest(
+                path,
+                job_id="dark-job",
+                video_name="JJR-102283_stream04_260201_041016.mp4",
+                manifest={
+                    "fps": 30.0,
+                    "total_frames": 900,
+                    "frame_stride": 5,
+                    "frames_processed": 0,
+                    "frames_with_detections": 0,
+                    "dark_skip_enabled": True,
+                    "skipped": True,
+                    "skip_reason": "dark_video",
+                    "dark_video_assessment": {
+                        "sample_count": 5,
+                        "dark_sample_count": 5,
+                        "all_samples_dark": True,
+                    },
+                    "frames": [],
+                },
+            )
+
+            timeline = load_timeline(path)
+            self.assertEqual(len(timeline["videos"]), 1)
+            video = timeline["videos"][0]
+            self.assertTrue(video["dark_skip_enabled"])
+            self.assertTrue(video["skipped"])
+            self.assertEqual(video["skip_reason"], "dark_video")
+            self.assertEqual(video["dark_video_assessment"]["dark_sample_count"], 5)
+            self.assertEqual(len(timeline["events"]), 0)
 
     def test_incremental_frame_merge_is_replaced_by_final_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,6 +172,53 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(final_added, 1)
             self.assertEqual(len(timeline["events"]), 1)
             self.assertEqual(len(timeline["videos"]), 1)
+
+    def test_reprocessing_same_video_replaces_previous_video_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            video_name = "JJR-102283_stream04_260201_040016.mp4"
+            first_manifest = {
+                "fps": 1.0,
+                "total_frames": 100,
+                "frame_stride": 5,
+                "frames_processed": 1,
+                "frames_with_detections": 1,
+                "frames": [
+                    {
+                        "frame_index": 10,
+                        "timestamp_sec": 10.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8}],
+                        "preview_path": "frame_000010.jpg",
+                    }
+                ],
+            }
+            second_manifest = {
+                **first_manifest,
+                "frames": [
+                    {
+                        "frame_index": 20,
+                        "timestamp_sec": 20.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.9}],
+                        "preview_path": "frame_000020.jpg",
+                    }
+                ],
+            }
+
+            merge_job_manifest(path, job_id="old", video_name=video_name, manifest=first_manifest)
+            merge_job_manifest(
+                path,
+                job_id="new",
+                video_name=video_name,
+                manifest=second_manifest,
+                replace_video=True,
+            )
+
+            timeline = load_timeline(path)
+            self.assertEqual(len(timeline["events"]), 1)
+            self.assertEqual(timeline["events"][0]["job_id"], "new")
+            self.assertEqual(timeline["events"][0]["frame_index"], 20)
+            self.assertEqual(len(timeline["videos"]), 1)
+            self.assertEqual(timeline["videos"][0]["job_id"], "new")
 
     def test_merge_consecutive_frames_into_one_segment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,15 +302,147 @@ class DetectTimelineTests(unittest.TestCase):
             )
             self.assertEqual(len(build_segments(__import__("json").loads(path.read_text(encoding="utf-8")))), 3)
 
-            result = compact_timeline_segments(path, max_gap_sec=10)
+            result = compact_timeline_segments(path, max_gap_sec=8)
             self.assertEqual(result["before_segment_count"], 3)
             self.assertEqual(result["segment_count"], 1)
             self.assertEqual(result["merged_segment_count"], 2)
+            self.assertTrue(result["postprocess"]["merge_segments"])
+            self.assertEqual(result["postprocess"]["segment_merge_gap_sec"], 8.0)
+            self.assertEqual(result["postprocess"]["merged_segment_count"], 2)
 
             listed = list_timeline(path)
             self.assertEqual(listed["total"], 1)
-            self.assertEqual(listed["segment_merge_gap_sec"], 10.0)
+            self.assertEqual(listed["segment_merge_gap_sec"], 8.0)
             self.assertEqual(listed["segments"][0]["frame_count"], 3)
+            timeline = load_timeline(path)
+            self.assertEqual(timeline["postprocess"]["segment_count"], 1)
+
+    def test_postprocess_removes_size_outlier_detections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 1.0,
+                "total_frames": 100,
+                "frame_stride": 5,
+                "frames_processed": 3,
+                "frames_with_detections": 3,
+                "frames": [
+                    {
+                        "frame_index": 10,
+                        "timestamp_sec": 10.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [0, 0, 10, 10]}],
+                        "preview_path": "frame_000010.jpg",
+                    },
+                    {
+                        "frame_index": 15,
+                        "timestamp_sec": 15.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [0, 0, 10, 10]}],
+                        "preview_path": "frame_000015.jpg",
+                    },
+                    {
+                        "frame_index": 20,
+                        "timestamp_sec": 20.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [0, 0, 30, 30]}],
+                        "preview_path": "frame_000020.jpg",
+                    },
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_size_outliers=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 1)
+            self.assertEqual(result["removed_event_count"], 1)
+            self.assertEqual(result["event_count"], 2)
+            self.assertEqual(result["removed_by_condition"]["size_outlier"], 1)
+
+    def test_postprocess_removes_tall_thin_box_detections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 1.0,
+                "total_frames": 100,
+                "frame_stride": 5,
+                "frames_processed": 2,
+                "frames_with_detections": 2,
+                "frames": [
+                    {
+                        "frame_index": 10,
+                        "timestamp_sec": 10.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [0, 0, 20, 20]}],
+                        "preview_path": "frame_000010.jpg",
+                    },
+                    {
+                        "frame_index": 15,
+                        "timestamp_sec": 15.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [0, 0, 20, 60]}],
+                        "preview_path": "frame_000015.jpg",
+                    },
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_tall_thin_boxes=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 1)
+            self.assertEqual(result["removed_event_count"], 1)
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["removed_by_condition"]["tall_thin_box"], 1)
+
+    def test_postprocess_removes_static_three_to_four_second_track(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 1.0,
+                "total_frames": 100,
+                "frame_stride": 1,
+                "frames_processed": 4,
+                "frames_with_detections": 4,
+                "frames": [
+                    {
+                        "frame_index": idx,
+                        "timestamp_sec": float(idx),
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [100, 100, 140, 140]}],
+                        "preview_path": f"frame_{idx:06d}.jpg",
+                    }
+                    for idx in (10, 11, 12, 13)
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_static_short_tracks=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 4)
+            self.assertEqual(result["removed_event_count"], 4)
+            self.assertEqual(result["event_count"], 0)
+            self.assertEqual(result["removed_by_condition"]["static_short_track"], 4)
 
     def test_timeline_range_from_video_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
