@@ -106,9 +106,9 @@
       </div>
       <div class="row">
         <label>프레임 간격 <input id="frameStride" type="number" value="5" min="1" /></label>
-        <label>Confidence <input id="confidence" type="number" value="0.6" min="0.05" max="1" step="0.05" /></label>
+        <label>Confidence <input id="confidence" type="number" value="0.8" min="0.05" max="1" step="0.05" /></label>
         <label>추론 크기 <input id="detectImgsz" type="number" value="416" min="320" max="1280" step="32" /></label>
-        <label><input id="useSam" type="checkbox" /> 정밀 마스크(SAM)</label>
+        <label><input id="useSam" type="checkbox" checked /> 정밀 마스크(SAM)</label>
         <label><input id="skipDarkVideo" type="checkbox" checked /> 어두운 영상 건너뛰기(파일/Lake)</label>
       </div>
       <div class="row detect-actions">
@@ -137,6 +137,7 @@
         <label><input id="postRemoveSizeOutliers" type="checkbox" checked /> 크기 이상 제거</label>
         <label><input id="postRemoveTallThinBoxes" type="checkbox" checked /> 세로형 빈 그물 제거</label>
         <label><input id="postRemoveStaticShortTracks" type="checkbox" checked /> 3-4초 정지 제거</label>
+        <label><input id="postRemoveTemporalIsolated" type="checkbox" checked /> 시간 고립 제거</label>
         <label><input id="postRemoveColorOutliers" type="checkbox" checked /> 색상 이상 제거</label>
         <button id="compactTimelineBtn" type="button" class="secondary">후처리 적용</button>
         <span id="compactTimelineStatus" class="hint"></span>
@@ -239,6 +240,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
-  <script src="/static/detect.js?v=72"></script>
+  <script src="/static/detect.js?v=78"></script>
 </body>
 </html>

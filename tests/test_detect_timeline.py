@@ -444,6 +444,139 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(result["event_count"], 0)
             self.assertEqual(result["removed_by_condition"]["static_short_track"], 4)
 
+    def test_postprocess_removes_temporally_isolated_detections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 1.0,
+                "total_frames": 100,
+                "frame_stride": 5,
+                "frames_processed": 3,
+                "frames_with_detections": 3,
+                "frames": [
+                    {
+                        "frame_index": 10,
+                        "timestamp_sec": 10.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [100, 100, 140, 140]}],
+                        "preview_path": "frame_000010.jpg",
+                    },
+                    {
+                        "frame_index": 15,
+                        "timestamp_sec": 15.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [106, 102, 146, 142]}],
+                        "preview_path": "frame_000015.jpg",
+                    },
+                    {
+                        "frame_index": 40,
+                        "timestamp_sec": 40.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [300, 300, 340, 340]}],
+                        "preview_path": "frame_000040.jpg",
+                    },
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_temporal_isolated=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 1)
+            self.assertEqual(result["removed_event_count"], 1)
+            self.assertEqual(result["event_count"], 2)
+            self.assertEqual(result["removed_by_condition"]["temporal_isolated"], 1)
+            self.assertTrue(result["postprocess"]["remove_temporal_isolated"])
+            self.assertEqual(result["postprocess"]["temporal_isolation_window_sec"], 10.0)
+
+    def test_postprocess_removes_short_three_frame_temporal_burst(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 10.0,
+                "total_frames": 100,
+                "frame_stride": 3,
+                "frames_processed": 3,
+                "frames_with_detections": 3,
+                "frames": [
+                    {
+                        "frame_index": idx,
+                        "timestamp_sec": ts,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [100, 100, 140, 140]}],
+                        "preview_path": f"frame_{idx:06d}.jpg",
+                    }
+                    for idx, ts in ((10, 1.0), (13, 1.3), (16, 1.6))
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_temporal_isolated=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 3)
+            self.assertEqual(result["removed_event_count"], 3)
+            self.assertEqual(result["event_count"], 0)
+            self.assertEqual(result["removed_by_condition"]["temporal_isolated"], 3)
+            self.assertEqual(result["postprocess"]["temporal_short_burst_max_frames"], 3)
+            self.assertEqual(result["postprocess"]["temporal_short_burst_max_duration_sec"], 1.0)
+
+    def test_postprocess_preserves_temporal_tail_when_detection_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 1.0,
+                "total_frames": 100,
+                "frame_stride": 5,
+                "frames_processed": 2,
+                "frames_with_detections": 2,
+                "frames": [
+                    {
+                        "frame_index": 10,
+                        "timestamp_sec": 10.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [100, 100, 140, 140]}],
+                        "preview_path": "frame_000010.jpg",
+                    },
+                    {
+                        "frame_index": 40,
+                        "timestamp_sec": 40.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [300, 300, 340, 340]}],
+                        "preview_path": "frame_000040.jpg",
+                    },
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_temporal_isolated=True,
+                temporal_isolation_protect_tail_sec=10.0,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 1)
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["postprocess"]["temporal_isolation_protect_tail_sec"], 10.0)
+            timeline = load_timeline(path)
+            self.assertEqual(timeline["events"][0]["frame_index"], 40)
+
     def test_timeline_range_from_video_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"

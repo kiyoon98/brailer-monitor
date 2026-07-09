@@ -13,6 +13,10 @@ from typing import Any
 
 from .video_time import absolute_frame_time, format_absolute_time, parse_video_start_time
 
+TEMPORAL_ISOLATION_WINDOW_SEC = 10.0
+TEMPORAL_SHORT_BURST_MAX_FRAMES = 3
+TEMPORAL_SHORT_BURST_MAX_DURATION_SEC = 1.0
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -495,6 +499,92 @@ def _static_short_track_keys(entries: list[dict[str, Any]], videos: list[dict[st
     return remove
 
 
+def _similar_temporal_detection(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    area_a = float(a.get("area") or 0.0)
+    area_b = float(b.get("area") or 0.0)
+    width_a = float(a.get("width") or 0.0)
+    width_b = float(b.get("width") or 0.0)
+    height_a = float(a.get("height") or 0.0)
+    height_b = float(b.get("height") or 0.0)
+    if min(area_a, area_b, width_a, width_b, height_a, height_b) <= 0:
+        return False
+
+    area_ratio = area_b / area_a
+    width_ratio = width_b / width_a
+    height_ratio = height_b / height_a
+    if not (0.5 <= area_ratio <= 2.0 and 0.5 <= width_ratio <= 2.0 and 0.5 <= height_ratio <= 2.0):
+        return False
+
+    ax, ay = a["center"]
+    bx, by = b["center"]
+    distance = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+    max_diag = max(float(a.get("diag") or 0.0), float(b.get("diag") or 0.0))
+    return distance <= max(80.0, max_diag * 0.75)
+
+
+def _temporal_isolated_keys(
+    entries: list[dict[str, Any]],
+    *,
+    window_sec: float = TEMPORAL_ISOLATION_WINDOW_SEC,
+    protect_tail_sec: float = 0.0,
+) -> set[tuple[int, int]]:
+    remove: set[tuple[int, int]] = set()
+    window = max(0.0, float(window_sec))
+    if window <= 0:
+        return remove
+
+    for group in _group_entries(entries).values():
+        latest_timestamp = max((float(entry["timestamp_sec"]) for entry in group), default=0.0)
+        def can_remove(entry: dict[str, Any]) -> bool:
+            return protect_tail_sec <= 0 or float(entry["timestamp_sec"]) < latest_timestamp - protect_tail_sec
+
+        if len(group) < 2:
+            remove.update(entry["key"] for entry in group if can_remove(entry))
+            continue
+        ordered = sorted(group, key=lambda entry: (entry["timestamp_sec"], entry["frame_index"]))
+        for index, entry in enumerate(ordered):
+            if not can_remove(entry):
+                continue
+            has_neighbor = False
+            for other_index, other in enumerate(ordered):
+                if other_index == index:
+                    continue
+                time_gap = abs(float(other["timestamp_sec"]) - float(entry["timestamp_sec"]))
+                if time_gap <= 0.0001:
+                    continue
+                if time_gap > window:
+                    continue
+                if _similar_temporal_detection(entry, other):
+                    has_neighbor = True
+                    break
+            if not has_neighbor:
+                remove.add(entry["key"])
+
+        runs: list[list[dict[str, Any]]] = []
+        for entry in ordered:
+            if not runs:
+                runs.append([entry])
+                continue
+            prev = runs[-1][-1]
+            time_gap = float(entry["timestamp_sec"]) - float(prev["timestamp_sec"])
+            if 0.0 < time_gap <= TEMPORAL_SHORT_BURST_MAX_DURATION_SEC and _similar_temporal_detection(prev, entry):
+                runs[-1].append(entry)
+            else:
+                runs.append([entry])
+
+        for run in runs:
+            if len(run) < 2:
+                continue
+            if len(run) > TEMPORAL_SHORT_BURST_MAX_FRAMES:
+                continue
+            if not all(can_remove(entry) for entry in run):
+                continue
+            duration_sec = float(run[-1]["timestamp_sec"]) - float(run[0]["timestamp_sec"])
+            if duration_sec <= TEMPORAL_SHORT_BURST_MAX_DURATION_SEC:
+                remove.update(entry["key"] for entry in run)
+    return remove
+
+
 def _crop_color_stats(video_path: Path, frame_index: int, bbox: list[float]) -> dict[str, float] | None:
     try:
         import cv2
@@ -605,6 +695,8 @@ def compact_timeline_segments(
     remove_size_outliers: bool = False,
     remove_tall_thin_boxes: bool = False,
     remove_static_short_tracks: bool = False,
+    remove_temporal_isolated: bool = False,
+    temporal_isolation_protect_tail_sec: float = 0.0,
     remove_color_outliers: bool = False,
     jobs_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -622,6 +714,11 @@ def compact_timeline_segments(
         ("size_outlier", remove_size_outliers, lambda: _size_outlier_keys(entries)),
         ("tall_thin_box", remove_tall_thin_boxes, lambda: _tall_thin_box_keys(entries)),
         ("static_short_track", remove_static_short_tracks, lambda: _static_short_track_keys(entries, timeline.get("videos", []))),
+        (
+            "temporal_isolated",
+            remove_temporal_isolated,
+            lambda: _temporal_isolated_keys(entries, protect_tail_sec=temporal_isolation_protect_tail_sec),
+        ),
         ("color_outlier", remove_color_outliers, lambda: _color_outlier_keys(entries, jobs_root)),
     ):
         if not enabled:
@@ -644,6 +741,11 @@ def compact_timeline_segments(
         "remove_size_outliers": bool(remove_size_outliers),
         "remove_tall_thin_boxes": bool(remove_tall_thin_boxes),
         "remove_static_short_tracks": bool(remove_static_short_tracks),
+        "remove_temporal_isolated": bool(remove_temporal_isolated),
+        "temporal_isolation_window_sec": TEMPORAL_ISOLATION_WINDOW_SEC,
+        "temporal_short_burst_max_frames": TEMPORAL_SHORT_BURST_MAX_FRAMES,
+        "temporal_short_burst_max_duration_sec": TEMPORAL_SHORT_BURST_MAX_DURATION_SEC,
+        "temporal_isolation_protect_tail_sec": float(temporal_isolation_protect_tail_sec),
         "remove_color_outliers": bool(remove_color_outliers),
         "before_event_count": before_events,
         "removed_detection_count": removed_detections,
@@ -774,6 +876,7 @@ def _upsert_video_record(
         "duration_sec": round(duration_sec, 3),
         "fps": manifest.get("fps"),
         "frame_stride": manifest.get("frame_stride"),
+        "confidence": manifest.get("confidence"),
         "total_frames": manifest.get("total_frames"),
         "frames_processed": manifest.get("frames_processed", 0),
         "frames_with_detections": manifest.get("frames_with_detections", 0),

@@ -36,6 +36,8 @@ from ..video_time import parse_video_start_time
 
 logger = logging.getLogger(__name__)
 SAVE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+DEFAULT_DETECTION_CONFIDENCE = 0.8
+EXCLUDED_DEFAULT_DETECTION_MODEL_NAMES = {"two_03032220"}
 
 
 def _now_iso() -> str:
@@ -53,6 +55,18 @@ def _is_cuda_oom_error(message: str) -> bool:
 
 def _is_cpu_device(device: str | int) -> bool:
     return isinstance(device, str) and device.lower() == "cpu"
+
+
+def _normalized_model_name(name: str) -> str:
+    return re.sub(r"[-\s]+", "_", name.strip().lower())
+
+
+def _is_default_detection_model(record: Any) -> bool:
+    normalized_name = _normalized_model_name(str(getattr(record, "name", "")))
+    if normalized_name in EXCLUDED_DEFAULT_DETECTION_MODEL_NAMES:
+        return False
+    class_names = getattr(record, "class_names", None) or []
+    return any("brailer" in str(name).strip().lower() for name in class_names)
 
 
 def _safe_saved_result_id(name: str) -> str:
@@ -358,11 +372,21 @@ class DetectPipelineManager:
 
     def list_models(self) -> dict[str, Any]:
         state = self._load_state()
-        models = [record.to_dict() for record in self.model_library.list_models()]
+        records = self.model_library.list_models()
+        models = [record.to_dict() for record in records]
         active_id = state.active_model_id
         if active_id and not self.model_library.exists(active_id):
             active_id = None
-        return {"models": models, "active_id": active_id}
+        default_detection_model_ids = [
+            record.id
+            for record in records
+            if _is_default_detection_model(record) and Path(record.weights_path).exists()
+        ]
+        return {
+            "models": models,
+            "active_id": active_id,
+            "default_detection_model_ids": default_detection_model_ids,
+        }
 
     def activate_model(self, model_id: str) -> dict[str, Any]:
         with self._lock:
@@ -456,6 +480,24 @@ class DetectPipelineManager:
             )
         if specs:
             return specs
+
+        if model_path is None:
+            for record in self.model_library.list_models():
+                if not _is_default_detection_model(record):
+                    continue
+                weights = Path(record.weights_path)
+                if not weights.exists():
+                    continue
+                specs.append(
+                    {
+                        "id": record.id,
+                        "name": record.name,
+                        "path": str(weights.resolve()),
+                        "task_type": record.task_type,
+                    }
+                )
+            if specs:
+                return specs
 
         if model_path is None:
             model_path = self._active_weights(state)
@@ -588,9 +630,9 @@ class DetectPipelineManager:
                     "video_path": job_dir / "video.mp4",
                     "model_path": model_path,
                     "frame_stride": int(template.get("frame_stride", 5)),
-                    "confidence": float(template.get("confidence", 0.6)),
+                    "confidence": float(template.get("confidence", DEFAULT_DETECTION_CONFIDENCE)),
                     "imgsz": int(template.get("imgsz", 416)),
-                    "use_sam": bool(template.get("use_sam", False)),
+                    "use_sam": bool(template.get("use_sam", True)),
                     "device": "cpu",
                     "batch_index": state.detect_batch_index or 0,
                 }
@@ -765,7 +807,13 @@ class DetectPipelineManager:
         if meta_path.exists():
             payload["dataset_meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
         payload["detect_timeline"] = timeline_summary(self._timeline_path)
-        payload["models"] = [record.to_dict() for record in self.model_library.list_models()]
+        records = self.model_library.list_models()
+        payload["models"] = [record.to_dict() for record in records]
+        payload["default_detection_model_ids"] = [
+            record.id
+            for record in records
+            if _is_default_detection_model(record) and Path(record.weights_path).exists()
+        ]
         if state.active_model_id and not self.model_library.exists(state.active_model_id):
             payload["active_model_id"] = None
             payload["active_model_name"] = None
@@ -811,8 +859,13 @@ class DetectPipelineManager:
         remove_size_outliers: bool = False,
         remove_tall_thin_boxes: bool = False,
         remove_static_short_tracks: bool = False,
+        remove_temporal_isolated: bool = False,
         remove_color_outliers: bool = False,
     ) -> dict[str, Any]:
+        state_before = self._load_state()
+        temporal_isolation_protect_tail_sec = (
+            10.0 if _detect_is_active(state_before, threads=self._detect_threads) else 0.0
+        )
         result = compact_timeline_segments(
             self._timeline_path,
             max_gap_sec=max_gap_sec,
@@ -821,6 +874,8 @@ class DetectPipelineManager:
             remove_size_outliers=remove_size_outliers,
             remove_tall_thin_boxes=remove_tall_thin_boxes,
             remove_static_short_tracks=remove_static_short_tracks,
+            remove_temporal_isolated=remove_temporal_isolated,
+            temporal_isolation_protect_tail_sec=temporal_isolation_protect_tail_sec,
             remove_color_outliers=remove_color_outliers,
             jobs_root=self._detect_jobs_dir(),
         )
@@ -1167,9 +1222,9 @@ class DetectPipelineManager:
         model_path: Path | None = None,
         model_ids: list[str] | None = None,
         frame_stride: int = 5,
-        confidence: float = 0.6,
+        confidence: float = DEFAULT_DETECTION_CONFIDENCE,
         imgsz: int = 416,
-        use_sam: bool = False,
+        use_sam: bool = True,
         skip_dark_video: bool = True,
         device: str | int = 0,
     ) -> DetectJob | dict[str, Any]:
@@ -1208,9 +1263,9 @@ class DetectPipelineManager:
         model_path: Path | None = None,
         model_ids: list[str] | None = None,
         frame_stride: int = 5,
-        confidence: float = 0.6,
+        confidence: float = DEFAULT_DETECTION_CONFIDENCE,
         imgsz: int = 416,
-        use_sam: bool = False,
+        use_sam: bool = True,
         skip_dark_video: bool = True,
         device: str | int = 0,
     ) -> dict[str, Any]:
@@ -1337,9 +1392,9 @@ class DetectPipelineManager:
         model_path: Path | None = None,
         model_ids: list[str] | None = None,
         frame_stride: int = 5,
-        confidence: float = 0.6,
+        confidence: float = DEFAULT_DETECTION_CONFIDENCE,
         imgsz: int = 416,
-        use_sam: bool = False,
+        use_sam: bool = True,
         device: str | int = 0,
     ) -> dict[str, Any]:
         stream_url = stream_url.strip()
@@ -1429,7 +1484,7 @@ class DetectPipelineManager:
         frame_stride: int = item["frame_stride"]
         confidence: float = item["confidence"]
         imgsz: int = int(item.get("imgsz") or 416)
-        use_sam: bool = bool(item.get("use_sam", False))
+        use_sam: bool = bool(item.get("use_sam", True))
         skip_dark_video: bool = bool(item.get("skip_dark_video", False))
         device: str | int = item["device"]
 
@@ -1641,6 +1696,7 @@ class DetectPipelineManager:
         event_manifest = {
             "frame_stride": frame_stride,
             "total_frames": self._planned_frame_count(video_path, frame_stride),
+            "confidence": confidence,
         }
 
         def _drain_progress() -> None:
@@ -1810,7 +1866,7 @@ class DetectPipelineManager:
 
         last_progress: dict[str, Any] | None = None
         events_offset = 0
-        event_manifest = {"frame_stride": frame_stride, "total_frames": 0}
+        event_manifest = {"frame_stride": frame_stride, "total_frames": 0, "confidence": confidence}
 
         def _drain_progress() -> None:
             nonlocal last_progress

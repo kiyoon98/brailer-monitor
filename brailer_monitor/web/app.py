@@ -67,9 +67,9 @@ class LakeRangeRequest(BaseModel):
     end_day: int = Field(ge=1, le=31)
     end_hour: int = Field(ge=0, le=23)
     frame_stride: int = Field(default=5, ge=1)
-    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
+    confidence: float = Field(default=0.8, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
-    use_sam: bool = False
+    use_sam: bool = True
     skip_dark_video: bool = True
     device: str | int = 0
     check_exists: bool = True
@@ -79,9 +79,9 @@ class StreamDetectRequest(BaseModel):
     stream_url: str = Field(default="http://127.0.0.1:8081/live_04.m3u8", min_length=1)
     model_ids: list[str] | None = None
     frame_stride: int = Field(default=5, ge=1)
-    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
+    confidence: float = Field(default=0.8, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
-    use_sam: bool = False
+    use_sam: bool = True
     device: str | int = 0
 
 
@@ -92,6 +92,7 @@ class TimelineCompactRequest(BaseModel):
     remove_size_outliers: bool = True
     remove_tall_thin_boxes: bool = True
     remove_static_short_tracks: bool = True
+    remove_temporal_isolated: bool = True
     remove_color_outliers: bool = True
 
 
@@ -353,9 +354,9 @@ async def pipeline_detect(
     files: list[UploadFile] = File(...),
     model_ids: list[str] | None = Form(None),
     frame_stride: int = Form(5),
-    confidence: float = Form(0.6),
+    confidence: float = Form(0.8),
     imgsz: int = Form(416),
-    use_sam: bool = Form(False),
+    use_sam: bool = Form(True),
     skip_dark_video: bool = Form(True),
     device: str | int = Form(0),
 ) -> dict:
@@ -562,6 +563,7 @@ async def pipeline_detect_timeline_compact(body: TimelineCompactRequest | None =
                 remove_size_outliers=body.remove_size_outliers,
                 remove_tall_thin_boxes=body.remove_tall_thin_boxes,
                 remove_static_short_tracks=body.remove_static_short_tracks,
+                remove_temporal_isolated=body.remove_temporal_isolated,
                 remove_color_outliers=body.remove_color_outliers,
             )
         }
@@ -637,6 +639,7 @@ def _list_detection_reports() -> list[dict]:
                 "created_at": "",
                 "source_summary": "-",
                 "model_summary": "-",
+                "confidence_summary": "-",
                 "segment_count": None,
                 "detection_frame_count": None,
                 "video_count": None,
@@ -656,6 +659,7 @@ def _list_detection_reports() -> list[dict]:
             item["created_at"] = str(payload.get("generated_at") or "")
             item["source_summary"] = str(payload.get("source_summary") or "-")
             item["model_summary"] = str(payload.get("model_summary") or "-")
+            item["confidence_summary"] = str(payload.get("confidence_summary") or "-")
             item["segment_count"] = payload.get("segment_count")
             item["detection_frame_count"] = payload.get("detection_frame_count")
             item["video_count"] = payload.get("video_count")

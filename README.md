@@ -139,16 +139,17 @@ python -m brailer_monitor train \
 공통 옵션:
 
 - `프레임 간격`: 몇 프레임마다 추론할지 지정
-- `Confidence`: 탐지 confidence threshold
+- `Confidence`: 탐지 confidence threshold. 기본값은 `0.8`입니다.
 - `추론 크기`: YOLO `imgsz`
-- `정밀 마스크(SAM)`: bbox 기반 추가 SAM mask 생성
+- `정밀 마스크(SAM)`: bbox 기반 추가 SAM mask 생성. 기본값은 켜짐입니다.
 - `어두운 영상 건너뛰기(파일/Lake)`: 영상 여러 지점을 사전 샘플링해 전부 확실히 어두우면 YOLO 추론 없이 skip
 
 모델 선택:
 
 - 모델 라이브러리의 **탐지** 체크박스를 하나 이상 켜야 탐지를 시작할 수 있습니다.
-- 여러 모델을 선택하면 각 모델이 독립적으로 추론한 뒤 같은 클래스의 bbox를 IoU 기준으로 병합합니다.
-- 병합된 결과의 confidence는 병합 후보 중 가장 높은 값을 사용합니다.
+- 기본 선택은 `brailer` 클래스가 있는 모델 전체이며, `two_03032220`/`two-03032220` 모델은 제외됩니다.
+- 여러 모델을 선택하면 각 모델이 독립적으로 추론한 뒤 같은 클래스의 bbox를 IoU 또는 포함 겹침 기준으로 병합합니다.
+- 병합된 결과의 bbox/mask는 병합 후보 중 bbox가 가장 큰 탐지를 사용하고, confidence와 대표 모델명은 가장 높은 confidence 탐지를 사용합니다.
 - preview 이미지, 스트림 오버레이, manifest에는 탐지에 사용된 모델명/앙상블 모델명이 함께 기록됩니다.
 
 Lake 저장소:
@@ -180,7 +181,7 @@ python -m brailer_monitor detect-video data/raw/video.mp4 \
   --model models/library/<model-id>/weights.pt \
   --out output/detect \
   --frame-stride 5 \
-  --confidence 0.6 \
+  --confidence 0.8 \
   --segmentation auto
 ```
 
@@ -203,7 +204,7 @@ python -m brailer_monitor detect-video data/raw/video.mp4 \
 - 썸네일 클릭 확대
 - 더블클릭으로 세그먼트 프레임 전체 보기
 - 8초 이내 구간 병합
-- 위치/크기/세로형 빈 그물/3-4초 정지/색상 이상 탐지 제거 후처리
+- 위치/크기/세로형 빈 그물/3-4초 정지/시간 고립 및 1초 이하 3프레임 burst/색상 이상 탐지 제거 후처리
 - 현재 탐지 결과 저장
 - 저장된 결과 불러오기
 - 외부 문서용 리포트 생성
@@ -223,12 +224,12 @@ python -m brailer_monitor detect-video data/raw/video.mp4 \
 웹 탐지는 하나 이상의 모델을 사용할 수 있습니다. 앙상블은 다음 방식으로 동작합니다.
 
 1. 선택된 각 모델이 같은 프레임을 독립적으로 추론합니다.
-2. 같은 클래스의 bbox끼리 IoU 기준으로 겹침을 비교합니다.
-3. IoU가 기준 이상인 bbox를 하나의 탐지로 병합합니다.
-4. 대표 bbox와 confidence는 병합 후보 중 confidence가 가장 높은 탐지를 사용합니다.
+2. 같은 클래스의 bbox끼리 IoU 또는 포함 겹침 기준으로 비교합니다.
+3. 기준 이상으로 겹치는 bbox를 하나의 탐지로 병합합니다.
+4. 대표 bbox/mask는 병합 후보 중 bbox가 가장 큰 탐지를 사용하고, confidence와 대표 모델명은 가장 높은 confidence 탐지를 사용합니다.
 5. 결과에는 대표 모델명과 병합에 참여한 모델명 목록이 기록됩니다.
 
-현재 기본 IoU 기준은 `0.5`입니다. 클래스가 다르면 bbox가 겹쳐도 병합하지 않습니다.
+현재 기본 IoU 기준은 `0.5`이고, 작은 bbox가 큰 bbox에 대부분 포함되는 경우도 같은 객체로 병합합니다. `brailer`/`brailers`는 같은 클래스 alias로 취급합니다. 클래스가 다르면 bbox가 겹쳐도 병합하지 않습니다.
 
 ## 모델과 segmentation fallback
 

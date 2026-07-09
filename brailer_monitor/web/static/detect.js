@@ -66,6 +66,7 @@ const els = {
   postRemoveSizeOutliers: document.getElementById("postRemoveSizeOutliers"),
   postRemoveTallThinBoxes: document.getElementById("postRemoveTallThinBoxes"),
   postRemoveStaticShortTracks: document.getElementById("postRemoveStaticShortTracks"),
+  postRemoveTemporalIsolated: document.getElementById("postRemoveTemporalIsolated"),
   postRemoveColorOutliers: document.getElementById("postRemoveColorOutliers"),
   compactTimelineBtn: document.getElementById("compactTimelineBtn"),
   compactTimelineStatus: document.getElementById("compactTimelineStatus"),
@@ -196,12 +197,37 @@ function formatModelSize(bytes) {
   return `${(n / 1000).toFixed(0)}KB`;
 }
 
+function normalizeModelName(name) {
+  return String(name || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+}
+
+function isDefaultExcludedDetectionModel(model) {
+  return normalizeModelName(model?.name) === "two_03032220";
+}
+
+function hasBrailerClass(model) {
+  return (model?.class_names || []).some((name) => String(name || "").toLowerCase().includes("brailer"));
+}
+
+function defaultDetectionModelIds(models, explicitIds) {
+  const list = Array.isArray(models) ? models : [];
+  const availableIds = new Set(list.map((model) => model.id));
+  const fromServer = Array.isArray(explicitIds)
+    ? explicitIds.filter((id) => availableIds.has(id))
+    : [];
+  if (fromServer.length) return fromServer;
+  return list
+    .filter((model) => hasBrailerClass(model) && !isDefaultExcludedDetectionModel(model))
+    .map((model) => model.id)
+    .filter(Boolean);
+}
+
 function selectedDetectionModelIds() {
   const available = new Set((lastPipelineState?.models || []).map((model) => model.id));
   return [...selectedModelIds].filter((id) => !available.size || available.has(id));
 }
 
-function renderModels(models, activeId) {
+function renderModels(models, activeId, defaultModelIds) {
   if (!els.modelList) return;
   const list = Array.isArray(models) ? models : [];
   if (els.modelCount) els.modelCount.textContent = String(list.length);
@@ -209,8 +235,13 @@ function renderModels(models, activeId) {
   const availableIds = new Set(list.map((model) => model.id));
   selectedModelIds = new Set([...selectedModelIds].filter((id) => availableIds.has(id)));
   if (!selectedModelIds.size && !modelSelectionTouched && list.length) {
-    const fallbackId = availableIds.has(activeId) ? activeId : list[0].id;
-    if (fallbackId) selectedModelIds.add(fallbackId);
+    const defaults = defaultDetectionModelIds(list, defaultModelIds ?? lastPipelineState?.default_detection_model_ids);
+    if (defaults.length) {
+      defaults.forEach((id) => selectedModelIds.add(id));
+    } else {
+      const fallbackId = availableIds.has(activeId) ? activeId : list[0].id;
+      if (fallbackId) selectedModelIds.add(fallbackId);
+    }
   }
 
   const selectedKey = [...selectedModelIds].sort().join(",");
@@ -265,7 +296,7 @@ function renderModels(models, activeId) {
 async function loadModels() {
   try {
     const data = await api("/api/pipeline/models");
-    renderModels(data.models, data.active_id);
+    renderModels(data.models, data.active_id, data.default_detection_model_ids);
     updateDetectButtonState();
   } catch (err) {
     console.error("loadModels failed", err);
@@ -350,7 +381,11 @@ async function handleModelAction(event) {
       if (btn.checked) selectedModelIds.add(modelId);
       else selectedModelIds.delete(modelId);
       modelListKey = "";
-      renderModels(lastPipelineState?.models || [], lastPipelineState?.active_model_id);
+      renderModels(
+        lastPipelineState?.models || [],
+        lastPipelineState?.active_model_id,
+        lastPipelineState?.default_detection_model_ids,
+      );
       updateDetectButtonState();
     } else if (action === "activate") {
       btn.disabled = true;
@@ -361,7 +396,7 @@ async function handleModelAction(event) {
       const { state } = await api("/api/pipeline/state");
       lastPipelineState = state;
       renderPipelineState(state);
-      renderModels(state.models, state.active_model_id);
+      renderModels(state.models, state.active_model_id, state.default_detection_model_ids);
       setStatus(els.trainStatus, "선택한 모델을 탐지에 사용합니다.", "ok");
       const modelName = item.querySelector(".model-name-text")?.textContent || "";
       await showModelFrames(modelId, modelName);
@@ -387,7 +422,7 @@ async function handleModelAction(event) {
       const { state } = await api("/api/pipeline/state");
       lastPipelineState = state;
       renderPipelineState(state);
-      renderModels(state.models, state.active_model_id);
+      renderModels(state.models, state.active_model_id, state.default_detection_model_ids);
     }
   } catch (err) {
     setStatus(els.trainStatus, err.message, "error");
@@ -745,6 +780,24 @@ function drawStreamDetectionOverlay(state) {
   const content = streamOverlayContentRect(sourceWidth, sourceHeight, width, height);
   const scaleX = content.width / Math.max(sourceWidth, 1);
   const scaleY = content.height / Math.max(sourceHeight, 1);
+  const drawPolygon = (polygon, fillStyle, strokeStyle, alpha = 0.22, lineWidth = 3) => {
+    if (!Array.isArray(polygon) || !polygon.length) return;
+    ctx.beginPath();
+    polygon.forEach((point, pointIndex) => {
+      const x = content.left + Number(point[0] || 0) * scaleX;
+      const y = content.top + Number(point[1] || 0) * scaleY;
+      if (pointIndex === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+    ctx.fillStyle = fillStyle;
+    ctx.globalAlpha = alpha;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = strokeStyle;
+    ctx.stroke();
+  };
 
   detections.forEach((det, index) => {
     const color = index % 2 ? "#fbbf24" : "#22c55e";
@@ -755,20 +808,10 @@ function drawStreamDetectionOverlay(state) {
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
 
-    if (Array.isArray(det.polygon_xy) && det.polygon_xy.length) {
-      ctx.beginPath();
-      det.polygon_xy.forEach((point, pointIndex) => {
-        const x = content.left + Number(point[0] || 0) * scaleX;
-        const y = content.top + Number(point[1] || 0) * scaleY;
-        if (pointIndex === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.closePath();
-      ctx.globalAlpha = 0.22;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.stroke();
-    }
+    const yoloPolygon = det.yolo_polygon_xy || (det.segmentation_source === "yolo" ? det.polygon_xy : null);
+    const samPolygon = det.segmentation_source === "yolo" ? null : det.polygon_xy;
+    drawPolygon(yoloPolygon, "rgba(6, 182, 212, 0.35)", "#06b6d4", 0.32, 2);
+    drawPolygon(samPolygon, "rgba(250, 204, 21, 0.34)", "#facc15", 0.28, 3);
 
     if (bbox.length === 4 && bbox.every(Number.isFinite)) {
       const x = content.left + bbox[0] * scaleX;
@@ -1434,7 +1477,7 @@ function renderPipelineState(state) {
   }
 
   if (state.models !== undefined) {
-    renderModels(state.models, state.active_model_id);
+    renderModels(state.models, state.active_model_id, state.default_detection_model_ids);
   }
 
   if (state.import_status === "completed" && meta) {
@@ -1946,22 +1989,6 @@ function renderTimelineAxis(range, segments) {
   updateTimelineZoomLabel();
 }
 
-async function fetchAllTimelineSegments() {
-  const allSegments = [];
-  let offset = 0;
-  while (true) {
-    const { timeline } = await api(
-      `/api/pipeline/detect/timeline?offset=${offset}&limit=${DETECT_FRAME_LIMIT}`,
-    );
-    allSegments.push(...(timeline.segments || []));
-    const fetched = timeline.segments?.length || 0;
-    if (fetched === 0 || offset + fetched >= (timeline.total || 0)) {
-      return { timeline, allSegments };
-    }
-    offset += fetched;
-  }
-}
-
 function appendTimelineSegments(segments) {
   for (const segment of segments) {
     const row = document.createElement("div");
@@ -1988,21 +2015,24 @@ async function loadTimeline({ reset = true } = {}) {
       els.frameResults.innerHTML = "";
       detectFrameOffset = 0;
       timelineZoom = 1;
-      const { timeline, allSegments } = await fetchAllTimelineSegments();
+      const { timeline } = await api(
+        `/api/pipeline/detect/timeline?offset=0&limit=${DETECT_FRAME_LIMIT}`,
+      );
+      const pageSegments = timeline.segments || [];
       timelineRange = {
         range_start: timeline.range_start,
         range_end: timeline.range_end,
         range_start_label: timeline.range_start_label,
         range_end_label: timeline.range_end_label,
       };
-      timelineAxisSegments = timeline.axis_segments || allSegments;
+      timelineAxisSegments = timeline.axis_segments || pageSegments;
       detectFrameTotal = timeline.total || 0;
       lastTimelineEventCount = timeline.event_count ?? detectFrameTotal;
       if (els.frameCount) els.frameCount.textContent = detectFrameTotal;
       renderTimelineAxis(timelineRange, timelineAxisSegments);
-      appendTimelineSegments(allSegments);
-      detectFrameOffset = allSegments.length;
-      els.detectFrameMore?.classList.add("hidden");
+      appendTimelineSegments(pageSegments);
+      detectFrameOffset = pageSegments.length;
+      els.detectFrameMore?.classList.toggle("hidden", detectFrameOffset >= detectFrameTotal);
       if (timeline.videos?.length) {
         handledDetectJobId = timeline.videos[timeline.videos.length - 1].job_id;
       }
@@ -2119,6 +2149,7 @@ async function compactTimeline() {
       remove_size_outliers: !!els.postRemoveSizeOutliers?.checked,
       remove_tall_thin_boxes: !!els.postRemoveTallThinBoxes?.checked,
       remove_static_short_tracks: !!els.postRemoveStaticShortTracks?.checked,
+      remove_temporal_isolated: !!els.postRemoveTemporalIsolated?.checked,
       remove_color_outliers: !!els.postRemoveColorOutliers?.checked,
     };
     const result = await api("/api/pipeline/detect/timeline/compact", {
@@ -2296,6 +2327,7 @@ function renderReportList(reports) {
         : report.id;
       const source = report.source_summary || "-";
       const models = report.model_summary || "-";
+      const confidence = report.confidence_summary || "-";
       const segments = report.segment_count ?? "-";
       const frames = report.detection_frame_count ?? "-";
       const videos = report.video_count ?? "-";
@@ -2303,7 +2335,7 @@ function renderReportList(reports) {
         <div class="report-item">
           <div class="report-item-main">
             <div class="report-item-title">${escapeHtml(created)}</div>
-            <div class="report-item-meta">소스 ${escapeHtml(source)} · 모델 ${escapeHtml(models)}</div>
+            <div class="report-item-meta">소스 ${escapeHtml(source)} · 모델 ${escapeHtml(models)} · Confidence ${escapeHtml(confidence)}</div>
             <div class="report-item-meta">구간 ${escapeHtml(segments)} · 탐지 프레임 ${escapeHtml(frames)} · 영상 ${escapeHtml(videos)}</div>
           </div>
           <div class="report-item-actions">
@@ -3047,7 +3079,7 @@ api("/api/pipeline/state")
     }
     renderPipelineState(state);
     lastPipelineState = state;
-    renderModels(state.models, state.active_model_id);
+    renderModels(state.models, state.active_model_id, state.default_detection_model_ids);
     const timelineCount =
       state.detect_timeline?.segment_count ??
       state.detect_timeline_events ??

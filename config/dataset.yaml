@@ -7,4 +7,4 @@ names:
   0: brailer
   1: brailers
 
-# task: segment, train: 143, val: 35
+# task: segment, train: 412, val: 103

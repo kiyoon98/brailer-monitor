@@ -19,6 +19,7 @@ from .detector import BrailerDetector, Detection
 logger = logging.getLogger(__name__)
 DEFAULT_SAM_MODEL = "sam2_t.pt"
 ENSEMBLE_IOU_THRESHOLD = 0.5
+ENSEMBLE_MIN_OVERLAP_RATIO = 0.65
 DARK_VIDEO_SAMPLE_COUNT = 5
 DARK_MEAN_STRICT_THRESHOLD = 35.0
 DARK_MEAN_THRESHOLD = 45.0
@@ -39,6 +40,28 @@ class FrameDetection:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _draw_polygon_mask(
+    vis: np.ndarray,
+    polygon: list[Any],
+    *,
+    fill_color: tuple[int, int, int],
+    line_color: tuple[int, int, int],
+    alpha: float = 0.4,
+    thickness: int = 2,
+) -> np.ndarray:
+    if not polygon:
+        return vis
+    pts = np.array([[int(round(float(x))), int(round(float(y)))] for x, y in polygon], dtype=np.int32)
+    mask_u8 = np.zeros(vis.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask_u8, [pts], 1)
+    mask = mask_u8.astype(bool)
+    overlay = vis.copy()
+    overlay[mask] = (overlay[mask] * 0.5 + np.array(fill_color) * 0.5).astype(np.uint8)
+    vis = cv2.addWeighted(overlay, alpha, vis, 1.0 - alpha, 0)
+    cv2.polylines(vis, [pts], True, line_color, thickness)
+    return vis
 
 
 def _draw_detections(frame: np.ndarray, detections: list[dict[str, Any]]) -> np.ndarray:
@@ -63,15 +86,28 @@ def _draw_detections(frame: np.ndarray, detections: list[dict[str, Any]]) -> np.
             2,
         )
         polygon = det.get("polygon_xy") or []
+        yolo_polygon = det.get("yolo_polygon_xy") or []
+        if not yolo_polygon and det.get("segmentation_source") == "yolo":
+            yolo_polygon = polygon
+            polygon = []
+        if yolo_polygon:
+            vis = _draw_polygon_mask(
+                vis,
+                yolo_polygon,
+                fill_color=(255, 255, 0),
+                line_color=(255, 255, 0),
+                alpha=0.25,
+                thickness=2,
+            )
         if polygon:
-            pts = np.array([[int(round(float(x))), int(round(float(y)))] for x, y in polygon], dtype=np.int32)
-            mask_u8 = np.zeros(vis.shape[:2], dtype=np.uint8)
-            cv2.fillPoly(mask_u8, [pts], 1)
-            mask = mask_u8.astype(bool)
-            overlay = vis.copy()
-            overlay[mask] = (overlay[mask] * 0.5 + np.array(color) * 0.5).astype(np.uint8)
-            vis = cv2.addWeighted(overlay, 0.4, vis, 0.6, 0)
-            cv2.polylines(vis, [pts], True, (0, 255, 255), 2)
+            vis = _draw_polygon_mask(
+                vis,
+                polygon,
+                fill_color=(0, 255, 255),
+                line_color=(0, 255, 255),
+                alpha=0.4,
+                thickness=2,
+            )
     return vis
 
 
@@ -249,19 +285,67 @@ def _bbox_area_px(det: Detection) -> int:
 
 
 def _bbox_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    inter = _bbox_intersection_area(a, b)
+    if inter <= 0:
+        return 0.0
+    area_a = _bbox_area(a)
+    area_b = _bbox_area(b)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _bbox_area(bbox: tuple[float, float, float, float]) -> float:
+    x1, y1, x2, y2 = bbox
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
+def _bbox_intersection_area(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     ix1 = max(ax1, bx1)
     iy1 = max(ay1, by1)
     ix2 = min(ax2, bx2)
     iy2 = min(ay2, by2)
-    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    if inter <= 0:
-        return 0.0
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    union = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
+    return max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+
+
+def _bbox_min_overlap_ratio(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    inter = _bbox_intersection_area(a, b)
+    min_area = min(_bbox_area(a), _bbox_area(b))
+    return inter / min_area if min_area > 0 else 0.0
+
+
+def _canonical_class_name(class_name: str) -> str:
+    normalized = class_name.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"brailer", "brailers"}:
+        return "brailer"
+    return normalized
+
+
+def _same_ensemble_class(a: Detection, b: Detection) -> bool:
+    class_a = _canonical_class_name(a.class_name)
+    class_b = _canonical_class_name(b.class_name)
+    if class_a and class_b:
+        return class_a == class_b
+    return a.class_id == b.class_id
+
+
+def _merge_class_name(det: Detection) -> str:
+    return "brailer" if _canonical_class_name(det.class_name) == "brailer" else det.class_name
+
+
+def _same_ensemble_object(
+    a: Detection,
+    b: Detection,
+    *,
+    iou_threshold: float,
+) -> bool:
+    if not _same_ensemble_class(a, b):
+        return False
+    return (
+        _bbox_iou(a.bbox_xyxy, b.bbox_xyxy) >= iou_threshold
+        or _bbox_min_overlap_ratio(a.bbox_xyxy, b.bbox_xyxy) >= ENSEMBLE_MIN_OVERLAP_RATIO
+    )
 
 
 def merge_ensemble_detections(
@@ -269,7 +353,7 @@ def merge_ensemble_detections(
     *,
     iou_threshold: float = ENSEMBLE_IOU_THRESHOLD,
 ) -> list[Detection]:
-    """Merge same-class detections from multiple models using IoU clusters."""
+    """Merge compatible detections from multiple models using overlap clusters."""
     if len(detections) <= 1:
         return detections
 
@@ -278,16 +362,20 @@ def merge_ensemble_detections(
     while remaining:
         seed = remaining.pop(0)
         cluster = [seed]
-        keep: list[Detection] = []
-        for det in remaining:
-            same_class = det.class_name == seed.class_name or det.class_id == seed.class_id
-            if same_class and _bbox_iou(seed.bbox_xyxy, det.bbox_xyxy) >= iou_threshold:
-                cluster.append(det)
-            else:
-                keep.append(det)
-        remaining = keep
+        grew = True
+        while grew:
+            grew = False
+            keep: list[Detection] = []
+            for det in remaining:
+                if any(_same_ensemble_object(det, member, iou_threshold=iou_threshold) for member in cluster):
+                    cluster.append(det)
+                    grew = True
+                else:
+                    keep.append(det)
+            remaining = keep
 
-        best = max(cluster, key=lambda det: det.confidence)
+        best_confidence = max(cluster, key=lambda det: det.confidence)
+        best_shape = max(cluster, key=lambda det: (_bbox_area_px(det), det.confidence))
         model_ids = tuple(
             dict.fromkeys(
                 str(det.model_id)
@@ -304,7 +392,13 @@ def merge_ensemble_detections(
         )
         merged.append(
             replace(
-                best,
+                best_shape,
+                confidence=best_confidence.confidence,
+                class_id=best_confidence.class_id,
+                class_name=_merge_class_name(best_confidence),
+                model_id=best_confidence.model_id,
+                model_name=best_confidence.model_name,
+                model_path=best_confidence.model_path,
                 ensemble_model_ids=model_ids,
                 ensemble_model_names=model_names,
             )
@@ -343,6 +437,12 @@ def _detection_to_dict(
         stats = _mask_stats(mask, frame_w, frame_h, det.bbox_xyxy)
         out.update(stats)
         out["area_px"] = stats["mask_area_px"]
+    if sam_mask is not None and det.mask is not None:
+        yolo_stats = _mask_stats(det.mask, frame_w, frame_h, det.bbox_xyxy)
+        out["yolo_mask_area_px"] = yolo_stats["mask_area_px"]
+        out["yolo_mask_width_px"] = yolo_stats["mask_width_px"]
+        out["yolo_mask_height_px"] = yolo_stats["mask_height_px"]
+        out["yolo_polygon_xy"] = yolo_stats["polygon_xy"]
     return out
 
 
@@ -412,11 +512,11 @@ def detect_video(
     output_dir: Path,
     model_specs: list[dict[str, Any]] | None = None,
     frame_stride: int = 1,
-    confidence: float = 0.35,
+    confidence: float = 0.8,
     device: str | int = 0,
     imgsz: int = 416,
     use_segmentation: bool | None = None,
-    use_sam: bool = False,
+    use_sam: bool = True,
     skip_dark_video: bool = False,
     max_frames: int | None = None,
     save_previews: bool = True,
@@ -479,6 +579,7 @@ def detect_video(
                 "height": height,
                 "total_frames": total_frames,
                 "frame_stride": frame_stride,
+                "confidence": confidence,
                 "imgsz": imgsz,
                 "use_sam": use_sam,
                 "dark_skip_enabled": True,
@@ -566,6 +667,7 @@ def detect_video(
         "height": height,
         "total_frames": total_frames,
         "frame_stride": frame_stride,
+        "confidence": confidence,
         "imgsz": imgsz,
         "use_sam": use_sam,
         "dark_skip_enabled": skip_dark_video,
@@ -594,11 +696,11 @@ def detect_stream(
     output_dir: Path,
     model_specs: list[dict[str, Any]] | None = None,
     frame_stride: int = 5,
-    confidence: float = 0.35,
+    confidence: float = 0.8,
     device: str | int = 0,
     imgsz: int = 416,
     use_segmentation: bool | None = None,
-    use_sam: bool = False,
+    use_sam: bool = True,
     save_previews: bool = True,
     on_progress: Callable[[int, int, int], None] | None = None,
     on_detection: Callable[[dict[str, Any]], None] | None = None,
@@ -745,6 +847,7 @@ def detect_stream(
         "total_frames": 0,
         "duration_sec": duration,
         "frame_stride": frame_stride,
+        "confidence": confidence,
         "imgsz": imgsz,
         "use_sam": use_sam,
         "stream": True,

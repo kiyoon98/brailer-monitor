@@ -23,6 +23,7 @@ class DetectReportTests(unittest.TestCase):
                     "fps": 10.0,
                     "total_frames": 100,
                     "frame_stride": 5,
+                    "confidence": 0.6,
                     "frames_processed": 3,
                     "frames_with_detections": 3,
                     "models": [
@@ -76,6 +77,8 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(report.model_summary, "win_01280525")
             self.assertEqual(report.model_count, 1)
             self.assertEqual(report.model_details[0]["id"], "model-a")
+            self.assertEqual(report.confidence_summary, "0.6")
+            self.assertEqual(report.confidence_values, [0.6])
             row = report.rows[0]
             self.assertEqual(row.best_match_pct, 95.0)
             self.assertEqual(row.best_frame_index, 15)
@@ -114,6 +117,7 @@ class DetectReportTests(unittest.TestCase):
                     "fps": 1.0,
                     "total_frames": 10,
                     "frame_stride": 1,
+                    "confidence": 0.55,
                     "frames_processed": 1,
                     "frames_with_detections": 1,
                     "models": [
@@ -146,6 +150,7 @@ class DetectReportTests(unittest.TestCase):
                     "fps": 1.0,
                     "total_frames": 10,
                     "frame_stride": 1,
+                    "confidence": 0.55,
                     "frames_processed": 0,
                     "frames_with_detections": 0,
                     "dark_skip_enabled": True,
@@ -179,6 +184,8 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(payload["source_summary"], "JJR-102283_stream04_260201_040016.mp4 외 1개 영상")
             self.assertEqual(payload["model_summary"], "model A, model B")
             self.assertEqual(payload["model_count"], 2)
+            self.assertEqual(payload["confidence_summary"], "0.55")
+            self.assertEqual(payload["confidence_values"], [0.55])
             self.assertEqual(payload["video_count"], 2)
             self.assertEqual(payload["dark_skip_enabled_video_count"], 1)
             self.assertEqual(payload["dark_skipped_video_count"], 1)
@@ -203,6 +210,7 @@ class DetectReportTests(unittest.TestCase):
             self.assertIn("연속구간 프레임 1/1", html_text)
             self.assertIn("소스: JJR-102283_stream04_260201_040016.mp4 외 1개 영상", html_text)
             self.assertIn("사용 모델: model A, model B", html_text)
+            self.assertIn("Confidence ratio: 0.55", html_text)
             self.assertIn("후처리: 8초 이내 구간 병합, 크기 이상 제거, 세로형 빈 그물 제거, 색상 이상 제거", html_text)
             self.assertIn("탐지 0개 제거", html_text)
             self.assertIn("어두운 영상 건너뛰기: 전체 2개 중 1개 건너뜀", html_text)

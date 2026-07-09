@@ -91,6 +91,73 @@ class VideoDetectTests(unittest.TestCase):
         self.assertEqual(merged[0].ensemble_model_ids, ("model_b", "model_a"))
         self.assertEqual(merged[0].ensemble_model_names, ("B", "A"))
 
+    def test_merge_ensemble_detections_keeps_largest_bbox_with_highest_confidence(self) -> None:
+        large_low = Detection(
+            bbox_xyxy=(0.0, 0.0, 130.0, 130.0),
+            confidence=0.7,
+            class_id=0,
+            class_name="brailer",
+            model_id="model_a",
+            model_name="A",
+        )
+        small_high = Detection(
+            bbox_xyxy=(10.0, 10.0, 115.0, 115.0),
+            confidence=0.95,
+            class_id=0,
+            class_name="brailer",
+            model_id="model_b",
+            model_name="B",
+        )
+
+        merged = merge_ensemble_detections([large_low, small_high])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].bbox_xyxy, large_low.bbox_xyxy)
+        self.assertEqual(merged[0].confidence, 0.95)
+        self.assertEqual(merged[0].model_id, "model_b")
+        self.assertEqual(merged[0].model_name, "B")
+        self.assertEqual(merged[0].ensemble_model_ids, ("model_b", "model_a"))
+        self.assertEqual(merged[0].ensemble_model_names, ("B", "A"))
+
+    def test_merge_ensemble_detections_expands_overlap_cluster(self) -> None:
+        first = Detection((0.0, 0.0, 100.0, 100.0), 0.95, 0, "brailer", model_id="a", model_name="A")
+        middle = Detection((20.0, 0.0, 120.0, 100.0), 0.9, 0, "brailer", model_id="b", model_name="B")
+        last = Detection((40.0, 0.0, 140.0, 100.0), 0.85, 0, "brailer", model_id="c", model_name="C")
+
+        merged = merge_ensemble_detections([first, middle, last])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].confidence, 0.95)
+        self.assertEqual(merged[0].ensemble_model_ids, ("a", "b", "c"))
+        self.assertEqual(merged[0].ensemble_model_names, ("A", "B", "C"))
+
+    def test_merge_ensemble_detections_merges_contained_boxes_and_brailer_aliases(self) -> None:
+        large = Detection(
+            bbox_xyxy=(0.0, 0.0, 200.0, 200.0),
+            confidence=0.88,
+            class_id=0,
+            class_name="brailer",
+            model_id="model_a",
+            model_name="A",
+        )
+        contained = Detection(
+            bbox_xyxy=(60.0, 60.0, 120.0, 120.0),
+            confidence=0.92,
+            class_id=1,
+            class_name="brailers",
+            model_id="model_b",
+            model_name="B",
+        )
+
+        merged = merge_ensemble_detections([large, contained])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].bbox_xyxy, large.bbox_xyxy)
+        self.assertEqual(merged[0].confidence, 0.92)
+        self.assertEqual(merged[0].class_name, "brailer")
+        self.assertEqual(merged[0].model_id, "model_b")
+        self.assertEqual(merged[0].ensemble_model_ids, ("model_b", "model_a"))
+
     def test_merge_ensemble_detections_keeps_different_classes_separate(self) -> None:
         detections = [
             Detection((0.0, 0.0, 100.0, 100.0), 0.9, 0, "brailer", model_id="a", model_name="A"),
@@ -122,6 +189,10 @@ class VideoDetectTests(unittest.TestCase):
         self.assertEqual(payload["mask_height_px"], 10)
         self.assertEqual(payload["segmentation_source"], "sam2")
         self.assertGreaterEqual(len(payload["polygon_xy"]), 4)
+        self.assertEqual(payload["yolo_mask_area_px"], 150)
+        self.assertEqual(payload["yolo_mask_width_px"], 15)
+        self.assertEqual(payload["yolo_mask_height_px"], 10)
+        self.assertGreaterEqual(len(payload["yolo_polygon_xy"]), 4)
         for x, y in payload["polygon_xy"]:
             self.assertGreaterEqual(x, 7)
             self.assertLessEqual(x, 21)

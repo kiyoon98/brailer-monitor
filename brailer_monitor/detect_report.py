@@ -81,6 +81,8 @@ class DetectionReport:
     model_summary: str
     model_count: int
     model_details: list[dict[str, str]]
+    confidence_summary: str
+    confidence_values: list[float]
     postprocess: dict[str, Any]
     video_count: int
     dark_skip_enabled_video_count: int
@@ -255,6 +257,22 @@ def _model_summary(details: list[dict[str, str]]) -> str:
     return ", ".join(names) if names else "-"
 
 
+def _confidence_values(videos: list[dict[str, Any]]) -> list[float]:
+    values: list[float] = []
+    for video in videos:
+        try:
+            value = float(video.get("confidence"))
+        except (TypeError, ValueError):
+            continue
+        if value not in values:
+            values.append(value)
+    return sorted(values)
+
+
+def _confidence_summary(values: list[float]) -> str:
+    return ", ".join(f"{value:g}" for value in values) if values else "-"
+
+
 def _dark_skipped_video_count(videos: list[dict[str, Any]]) -> int:
     return sum(
         1
@@ -283,6 +301,8 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         enabled.append("세로형 빈 그물 제거")
     if postprocess.get("remove_static_short_tracks"):
         enabled.append("3-4초 정지 제거")
+    if postprocess.get("remove_temporal_isolated"):
+        enabled.append("시간 고립/짧은 burst 제거")
     if postprocess.get("remove_color_outliers"):
         enabled.append("색상 이상 제거")
     label = ", ".join(enabled) if enabled else "선택된 후처리 없음"
@@ -292,6 +312,7 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         "size_outlier": "크기",
         "tall_thin_box": "세로형",
         "static_short_track": "정지",
+        "temporal_isolated": "시간고립",
         "color_outlier": "색상",
     }
     removed_parts = [
@@ -437,12 +458,15 @@ def build_detection_report(
     durations = [row.duration_sec for row in rows]
     classes = Counter(row.class_name for row in rows)
     model_details = _model_details(videos, events)
+    confidence_values = _confidence_values(videos)
     return DetectionReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
         source_summary=_source_summary(videos, rows),
         model_summary=_model_summary(model_details),
         model_count=len(model_details),
         model_details=model_details,
+        confidence_summary=_confidence_summary(confidence_values),
+        confidence_values=confidence_values,
         postprocess=dict(timeline.get("postprocess") or {}),
         video_count=len(videos),
         dark_skip_enabled_video_count=_dark_skip_enabled_video_count(videos),
@@ -1007,6 +1031,7 @@ def render_detection_report_html(report: DetectionReport) -> str:
   </div>
   <p>소스: {html.escape(report.source_summary)}</p>
   <p>사용 모델: {html.escape(report.model_summary)}</p>
+  <p>Confidence ratio: {html.escape(report.confidence_summary)}</p>
   {_postprocess_summary_html(report.postprocess)}
   <p>어두운 영상 건너뛰기: 전체 {report.video_count}개 중 {report.dark_skipped_video_count}개 건너뜀 · 검사 적용 {report.dark_skip_enabled_video_count}개</p>
   <p>클래스별 구간 수: {class_counts or "-"}</p>
