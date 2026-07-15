@@ -31,12 +31,16 @@ from ..detect_timeline import (
 from ..lake_video_source import download_video
 from ..model_library import ModelLibrary
 from ..train import TrainingCancelled, load_task_type, reset_training_artifacts, run_training
-from ..video_detect import DetectionCancelled
+from ..video_detect import (
+    DEFAULT_SEA_ANALYSIS_INTERVAL_SEC,
+    DetectionCancelled,
+    normalize_sea_analysis_interval,
+)
 from ..video_time import parse_video_start_time
 
 logger = logging.getLogger(__name__)
 SAVE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-DEFAULT_DETECTION_CONFIDENCE = 0.8
+DEFAULT_DETECTION_CONFIDENCE = 0.6
 EXCLUDED_DEFAULT_DETECTION_MODEL_NAMES = {"two_03032220"}
 
 
@@ -108,6 +112,18 @@ class PipelineState:
     detect_processed_frames: int = 0
     detect_total_frames: int = 0
     detect_frames_with_objects: int = 0
+    detect_last_sea_ratio: float | None = None
+    detect_last_sea_percent: float | None = None
+    detect_last_sea_confidence: float | None = None
+    detect_last_vessel_ratio: float | None = None
+    detect_last_vessel_increase_ratio: float | None = None
+    detect_last_sea_quality: str | None = None
+    detect_sea_state: str | None = None
+    detect_sea_event: str | None = None
+    detect_sea_method: str | None = None
+    detect_sea_ratio_enabled: bool = False
+    detect_sea_only: bool = False
+    detect_sea_analysis_interval_sec: float = DEFAULT_SEA_ANALYSIS_INTERVAL_SEC
     detect_queue_pending: int = 0
     detect_batch_total: int = 0
     detect_batch_done: int = 0
@@ -137,6 +153,46 @@ def _detect_is_active(state: PipelineState, *, threads: dict[str, threading.Thre
         or any(thread.is_alive() for thread in threads.values())
     )
 
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _manifest_last_sea_stats(manifest: dict[str, Any]) -> tuple[float | None, float | None]:
+    for frame in reversed(manifest.get("frames") or []):
+        ratio = _optional_float(frame.get("sea_ratio"))
+        percent = _optional_float(frame.get("sea_percent"))
+        if ratio is not None or percent is not None:
+            return ratio, percent
+    return None, None
+
+
+def _apply_manifest_sea_analysis(job: "DetectJob", manifest: dict[str, Any]) -> None:
+    job.last_sea_ratio, job.last_sea_percent = _manifest_last_sea_stats(manifest)
+    for frame in reversed(manifest.get("frames") or []):
+        if frame.get("sea_quality") is None:
+            continue
+        job.last_sea_confidence = _optional_float(frame.get("sea_confidence"))
+        job.last_vessel_ratio = _optional_float(frame.get("vessel_ratio"))
+        job.last_vessel_increase_ratio = _optional_float(frame.get("vessel_increase_ratio"))
+        job.last_sea_quality = str(frame.get("sea_quality"))
+        job.sea_state = str(frame.get("sea_state")) if frame.get("sea_state") is not None else None
+        job.sea_event = str(frame.get("sea_event")) if frame.get("sea_event") is not None else None
+        job.sea_method = str(frame.get("sea_method")) if frame.get("sea_method") is not None else None
+        break
+
+
+def _sea_percent_from_progress(sea_ratio: float | None, sea_percent: float | None) -> float | None:
+    if sea_percent is not None:
+        return sea_percent
+    if sea_ratio is not None:
+        return sea_ratio * 100.0
+    return None
+
+
 @dataclass
 class DetectJob:
     job_id: str
@@ -147,6 +203,18 @@ class DetectJob:
     processed_frames: int = 0
     total_frames: int = 0
     frames_with_detections: int = 0
+    last_sea_ratio: float | None = None
+    last_sea_percent: float | None = None
+    last_sea_confidence: float | None = None
+    last_vessel_ratio: float | None = None
+    last_vessel_increase_ratio: float | None = None
+    last_sea_quality: str | None = None
+    sea_state: str | None = None
+    sea_event: str | None = None
+    sea_method: str | None = None
+    sea_ratio_enabled: bool = False
+    sea_only: bool = False
+    sea_analysis_interval_sec: float = DEFAULT_SEA_ANALYSIS_INTERVAL_SEC
     manifest_path: str | None = None
     error: str | None = None
 
@@ -167,6 +235,7 @@ class DetectPipelineManager:
         self._detect_threads: dict[str, threading.Thread] = {}
         self._detect_procs: dict[str, subprocess.Popen] = {}
         self._timeline_path = self.root / "detect_timeline.json"
+        self._sea_state_path = self.root / "sea_analysis_state.json"
         self._detect_queue: list[dict[str, Any]] = []
         self._batch_total = 0
         self._batch_done = 0
@@ -720,6 +789,9 @@ class DetectPipelineManager:
         job.processed_frames = int(manifest.get("frames_processed", 0))
         job.total_frames = job.processed_frames
         job.frames_with_detections = int(manifest.get("frames_with_detections", 0))
+        _apply_manifest_sea_analysis(job, manifest)
+        job.sea_ratio_enabled = bool(manifest.get("sea_ratio_enabled"))
+        job.sea_only = bool(manifest.get("sea_only"))
         job.manifest_path = str(manifest_path.resolve())
         self._save_job(job)
 
@@ -729,6 +801,17 @@ class DetectPipelineManager:
         state.detect_processed_frames = job.processed_frames
         state.detect_total_frames = job.total_frames
         state.detect_frames_with_objects = job.frames_with_detections
+        state.detect_last_sea_ratio = job.last_sea_ratio
+        state.detect_last_sea_percent = job.last_sea_percent
+        state.detect_last_sea_confidence = job.last_sea_confidence
+        state.detect_last_vessel_ratio = job.last_vessel_ratio
+        state.detect_last_vessel_increase_ratio = job.last_vessel_increase_ratio
+        state.detect_last_sea_quality = job.last_sea_quality
+        state.detect_sea_state = job.sea_state
+        state.detect_sea_event = job.sea_event
+        state.detect_sea_method = job.sea_method
+        state.detect_sea_ratio_enabled = job.sea_ratio_enabled
+        state.detect_sea_only = job.sea_only
         state.detect_batch_done = self._batch_done
         state.detect_timeline_events = summary["event_count"]
         self._save_state(state)
@@ -837,6 +920,9 @@ class DetectPipelineManager:
             state.detect_processed_frames = 0
             state.detect_total_frames = 0
             state.detect_frames_with_objects = 0
+            state.detect_last_sea_ratio = None
+            state.detect_last_sea_percent = None
+            state.detect_sea_only = False
             state.detect_queue_pending = 0
             state.detect_batch_total = 0
             state.detect_batch_done = 0
@@ -858,6 +944,7 @@ class DetectPipelineManager:
         remove_position_outliers: bool = False,
         remove_size_outliers: bool = False,
         remove_tall_thin_boxes: bool = False,
+        remove_right_edge_detections: bool = False,
         remove_static_short_tracks: bool = False,
         remove_temporal_isolated: bool = False,
         remove_color_outliers: bool = False,
@@ -873,6 +960,7 @@ class DetectPipelineManager:
             remove_position_outliers=remove_position_outliers,
             remove_size_outliers=remove_size_outliers,
             remove_tall_thin_boxes=remove_tall_thin_boxes,
+            remove_right_edge_detections=remove_right_edge_detections,
             remove_static_short_tracks=remove_static_short_tracks,
             remove_temporal_isolated=remove_temporal_isolated,
             temporal_isolation_protect_tail_sec=temporal_isolation_protect_tail_sec,
@@ -1225,6 +1313,10 @@ class DetectPipelineManager:
         confidence: float = DEFAULT_DETECTION_CONFIDENCE,
         imgsz: int = 416,
         use_sam: bool = True,
+        calculate_sea_ratio: bool = False,
+        sea_only: bool = False,
+        sea_analysis_interval_sec: float = DEFAULT_SEA_ANALYSIS_INTERVAL_SEC,
+        detect_roi: dict[str, Any] | None = None,
         skip_dark_video: bool = True,
         device: str | int = 0,
     ) -> DetectJob | dict[str, Any]:
@@ -1236,6 +1328,10 @@ class DetectPipelineManager:
             confidence=confidence,
             imgsz=imgsz,
             use_sam=use_sam,
+            calculate_sea_ratio=calculate_sea_ratio,
+            sea_only=sea_only,
+            sea_analysis_interval_sec=sea_analysis_interval_sec,
+            detect_roi=detect_roi,
             skip_dark_video=skip_dark_video,
             device=device,
         )
@@ -1266,14 +1362,28 @@ class DetectPipelineManager:
         confidence: float = DEFAULT_DETECTION_CONFIDENCE,
         imgsz: int = 416,
         use_sam: bool = True,
+        calculate_sea_ratio: bool = False,
+        sea_only: bool = False,
+        sea_analysis_interval_sec: float = DEFAULT_SEA_ANALYSIS_INTERVAL_SEC,
+        detect_roi: dict[str, Any] | None = None,
         skip_dark_video: bool = True,
         device: str | int = 0,
     ) -> dict[str, Any]:
         if not videos:
             raise ValueError("No videos provided")
+        sea_only = bool(sea_only)
+        if sea_only:
+            calculate_sea_ratio = True
+            use_sam = False
+        sea_analysis_interval_sec = normalize_sea_analysis_interval(sea_analysis_interval_sec)
 
         state = self._load_state()
-        model_specs = self._detection_model_specs(state, model_path=model_path, model_ids=model_ids)
+        model_specs = (
+            []
+            if sea_only
+            else self._detection_model_specs(state, model_path=model_path, model_ids=model_ids)
+        )
+        primary_model_path = Path(model_specs[0]["path"]) if model_specs else Path(".")
 
         self._clear_detection_cancel()
         self._recover_stale_detect()
@@ -1286,6 +1396,7 @@ class DetectPipelineManager:
             batch_index_base = self._batch_total if running else 0
 
             if not running:
+                self._sea_state_path.unlink(missing_ok=True)
                 self._batch_total = len(prepared_videos)
                 self._batch_done = 0
                 self._batch_failed = 0
@@ -1297,6 +1408,18 @@ class DetectPipelineManager:
                 state.detect_processed_frames = 0
                 state.detect_total_frames = 0
                 state.detect_progress_pct = 0.0
+                state.detect_last_sea_ratio = None
+                state.detect_last_sea_percent = None
+                state.detect_last_sea_confidence = None
+                state.detect_last_vessel_ratio = None
+                state.detect_last_vessel_increase_ratio = None
+                state.detect_last_sea_quality = None
+                state.detect_sea_state = "calibrating" if calculate_sea_ratio else None
+                state.detect_sea_event = None
+                state.detect_sea_method = None
+                state.detect_sea_ratio_enabled = bool(calculate_sea_ratio)
+                state.detect_sea_only = sea_only
+                state.detect_sea_analysis_interval_sec = sea_analysis_interval_sec
                 self._clear_loaded_saved_result(state)
             else:
                 self._batch_total += len(prepared_videos)
@@ -1305,12 +1428,16 @@ class DetectPipelineManager:
             for index, prepared in enumerate(prepared_videos):
                 item = {
                     "video_name": prepared["video_name"],
-                    "model_path": Path(model_specs[0]["path"]),
+                    "model_path": primary_model_path,
                     "model_specs": model_specs,
                     "frame_stride": frame_stride,
                     "confidence": confidence,
                     "imgsz": imgsz,
                     "use_sam": use_sam,
+                    "calculate_sea_ratio": bool(calculate_sea_ratio),
+                    "sea_only": sea_only,
+                    "sea_analysis_interval_sec": sea_analysis_interval_sec,
+                    "detect_roi": dict(detect_roi or {}),
                     "skip_dark_video": skip_dark_video,
                     "device": device,
                     "batch_index": batch_index_base + index + 1,
@@ -1395,15 +1522,28 @@ class DetectPipelineManager:
         confidence: float = DEFAULT_DETECTION_CONFIDENCE,
         imgsz: int = 416,
         use_sam: bool = True,
+        calculate_sea_ratio: bool = False,
+        sea_only: bool = False,
+        sea_analysis_interval_sec: float = DEFAULT_SEA_ANALYSIS_INTERVAL_SEC,
+        detect_roi: dict[str, Any] | None = None,
         device: str | int = 0,
     ) -> dict[str, Any]:
         stream_url = stream_url.strip()
         if not stream_url:
             raise ValueError("스트림 주소를 입력하세요.")
+        sea_only = bool(sea_only)
+        if sea_only:
+            calculate_sea_ratio = True
+            use_sam = False
+        sea_analysis_interval_sec = normalize_sea_analysis_interval(sea_analysis_interval_sec)
 
         state = self._load_state()
-        model_specs = self._detection_model_specs(state, model_path=model_path, model_ids=model_ids)
-        model_path = Path(model_specs[0]["path"])
+        model_specs = (
+            []
+            if sea_only
+            else self._detection_model_specs(state, model_path=model_path, model_ids=model_ids)
+        )
+        model_path = Path(model_specs[0]["path"]) if model_specs else Path(".")
 
         self._recover_stale_detect()
         state = self._load_state()
@@ -1411,6 +1551,7 @@ class DetectPipelineManager:
             raise RuntimeError("탐지가 진행 중입니다. 먼저 중지하세요.")
 
         self._clear_detection_cancel()
+        self._sea_state_path.unlink(missing_ok=True)
         self._detect_queue.clear()
         self._batch_total = 1
         self._batch_done = 0
@@ -1428,6 +1569,9 @@ class DetectPipelineManager:
             video_name=video_name,
             created_at=_now_iso(),
             status="running",
+            sea_ratio_enabled=bool(calculate_sea_ratio),
+            sea_only=sea_only,
+            sea_analysis_interval_sec=sea_analysis_interval_sec,
         )
         self._save_job(job)
         meta = {
@@ -1435,6 +1579,10 @@ class DetectPipelineManager:
             "video_start": parse_video_start_time(video_name).isoformat(),
             "stream_url": stream_url,
             "models": model_specs,
+            "calculate_sea_ratio": bool(calculate_sea_ratio),
+            "sea_only": sea_only,
+            "sea_analysis_interval_sec": sea_analysis_interval_sec,
+            "detect_roi": dict(detect_roi or {}),
         }
         (directory / "video_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -1449,6 +1597,18 @@ class DetectPipelineManager:
         state.detect_total_frames = 0
         state.detect_frames_with_objects = 0
         state.detect_progress_pct = 0.0
+        state.detect_last_sea_ratio = None
+        state.detect_last_sea_percent = None
+        state.detect_last_sea_confidence = None
+        state.detect_last_vessel_ratio = None
+        state.detect_last_vessel_increase_ratio = None
+        state.detect_last_sea_quality = None
+        state.detect_sea_state = "calibrating" if calculate_sea_ratio else None
+        state.detect_sea_event = None
+        state.detect_sea_method = None
+        state.detect_sea_ratio_enabled = bool(calculate_sea_ratio)
+        state.detect_sea_only = sea_only
+        state.detect_sea_analysis_interval_sec = sea_analysis_interval_sec
         state.detect_overlay_job_id = None
         state.detect_overlay_preview_path = None
         state.detect_overlay_frame_index = None
@@ -1463,7 +1623,22 @@ class DetectPipelineManager:
 
         thread = threading.Thread(
             target=self._run_stream_detection,
-            args=(job_id, stream_url, model_path, model_specs, frame_stride, confidence, imgsz, use_sam, device, video_name),
+            args=(
+                job_id,
+                stream_url,
+                model_path,
+                model_specs,
+                frame_stride,
+                confidence,
+                imgsz,
+                use_sam,
+                calculate_sea_ratio,
+                sea_only,
+                sea_analysis_interval_sec,
+                detect_roi,
+                device,
+                video_name,
+            ),
             daemon=True,
         )
         self._detect_threads[job_id] = thread
@@ -1485,6 +1660,12 @@ class DetectPipelineManager:
         confidence: float = item["confidence"]
         imgsz: int = int(item.get("imgsz") or 416)
         use_sam: bool = bool(item.get("use_sam", True))
+        calculate_sea_ratio: bool = bool(item.get("calculate_sea_ratio", False))
+        sea_only: bool = bool(item.get("sea_only", False))
+        sea_analysis_interval_sec = normalize_sea_analysis_interval(
+            item.get("sea_analysis_interval_sec", DEFAULT_SEA_ANALYSIS_INTERVAL_SEC)
+        )
+        detect_roi: dict[str, Any] | None = item.get("detect_roi")
         skip_dark_video: bool = bool(item.get("skip_dark_video", False))
         device: str | int = item["device"]
 
@@ -1502,6 +1683,15 @@ class DetectPipelineManager:
         state.detect_processed_frames = 0
         state.detect_total_frames = 0
         state.detect_progress_pct = 0.0
+        state.detect_last_sea_ratio = None
+        state.detect_last_sea_percent = None
+        state.detect_last_sea_confidence = None
+        state.detect_last_vessel_ratio = None
+        state.detect_last_vessel_increase_ratio = None
+        state.detect_last_sea_quality = None
+        state.detect_sea_state = None
+        state.detect_sea_event = None
+        state.detect_sea_method = None
         state.detect_error = None
         self._clear_loaded_saved_result(state)
         self._save_state(state)
@@ -1535,6 +1725,9 @@ class DetectPipelineManager:
             video_name=video_name,
             created_at=_now_iso(),
             status="running",
+            sea_ratio_enabled=calculate_sea_ratio,
+            sea_only=sea_only,
+            sea_analysis_interval_sec=sea_analysis_interval_sec,
         )
         self._save_job(job)
 
@@ -1542,6 +1735,10 @@ class DetectPipelineManager:
             "video_name": video_name,
             "video_start": video_start.isoformat() if video_start else None,
             "models": model_specs,
+            "calculate_sea_ratio": calculate_sea_ratio,
+            "sea_only": sea_only,
+            "sea_analysis_interval_sec": sea_analysis_interval_sec,
+            "detect_roi": dict(detect_roi or {}),
             "skip_dark_video": skip_dark_video,
         }
         (directory / "video_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -1557,6 +1754,9 @@ class DetectPipelineManager:
         state.detect_processed_frames = 0
         state.detect_total_frames = 0
         state.detect_frames_with_objects = 0
+        state.detect_sea_ratio_enabled = calculate_sea_ratio
+        state.detect_sea_only = sea_only
+        state.detect_sea_analysis_interval_sec = sea_analysis_interval_sec
         state.detect_overlay_job_id = None
         state.detect_overlay_preview_path = None
         state.detect_overlay_frame_index = None
@@ -1576,6 +1776,15 @@ class DetectPipelineManager:
         state.detect_total_frames = planned
         state.detect_processed_frames = 0
         state.detect_progress_pct = 0.0
+        state.detect_last_sea_ratio = None
+        state.detect_last_sea_percent = None
+        state.detect_last_sea_confidence = None
+        state.detect_last_vessel_ratio = None
+        state.detect_last_vessel_increase_ratio = None
+        state.detect_last_sea_quality = None
+        state.detect_sea_state = None
+        state.detect_sea_event = None
+        state.detect_sea_method = None
         self._save_state(state)
 
         thread = threading.Thread(
@@ -1589,6 +1798,10 @@ class DetectPipelineManager:
                 confidence,
                 imgsz,
                 use_sam,
+                calculate_sea_ratio,
+                sea_only,
+                sea_analysis_interval_sec,
+                detect_roi,
                 skip_dark_video,
                 device,
                 video_name,
@@ -1605,12 +1818,56 @@ class DetectPipelineManager:
         processed: int,
         total: int,
         with_detections: int,
+        sea_ratio: float | None = None,
+        sea_percent: float | None = None,
+        sea_confidence: float | None = None,
+        vessel_ratio: float | None = None,
+        vessel_increase_ratio: float | None = None,
+        sea_quality: str | None = None,
+        sea_state: str | None = None,
+        sea_event: str | None = None,
+        sea_method: str | None = None,
     ) -> None:
         job = self.get_detect_job(job_id)
         job.processed_frames = processed
         job.total_frames = total
         job.frames_with_detections = with_detections
         job.progress = processed / total if total > 0 else 0.0
+        has_sea_update = any(
+            value is not None
+            for value in (
+                sea_ratio,
+                sea_percent,
+                sea_confidence,
+                vessel_ratio,
+                vessel_increase_ratio,
+                sea_quality,
+                sea_state,
+                sea_event,
+                sea_method,
+            )
+        )
+        if processed == 0:
+            job.last_sea_ratio = None
+            job.last_sea_percent = None
+            job.last_sea_confidence = None
+            job.last_vessel_ratio = None
+            job.last_vessel_increase_ratio = None
+            job.last_sea_quality = None
+            job.sea_state = None
+            job.sea_event = None
+            job.sea_method = None
+        elif sea_ratio is not None or sea_percent is not None:
+            job.last_sea_ratio = sea_ratio
+            job.last_sea_percent = _sea_percent_from_progress(sea_ratio, sea_percent)
+        if processed > 0 and has_sea_update:
+            job.last_sea_confidence = sea_confidence
+            job.last_vessel_ratio = vessel_ratio
+            job.last_vessel_increase_ratio = vessel_increase_ratio
+            job.last_sea_quality = sea_quality
+            job.sea_state = sea_state
+            job.sea_event = sea_event
+            job.sea_method = sea_method
         self._save_job(job)
 
         state = self._load_state()
@@ -1619,6 +1876,27 @@ class DetectPipelineManager:
             state.detect_processed_frames = processed
             state.detect_total_frames = total
             state.detect_frames_with_objects = with_detections
+            if processed == 0:
+                state.detect_last_sea_ratio = None
+                state.detect_last_sea_percent = None
+                state.detect_last_sea_confidence = None
+                state.detect_last_vessel_ratio = None
+                state.detect_last_vessel_increase_ratio = None
+                state.detect_last_sea_quality = None
+                state.detect_sea_state = None
+                state.detect_sea_event = None
+                state.detect_sea_method = None
+            elif sea_ratio is not None or sea_percent is not None:
+                state.detect_last_sea_ratio = sea_ratio
+                state.detect_last_sea_percent = _sea_percent_from_progress(sea_ratio, sea_percent)
+            if processed > 0 and has_sea_update:
+                state.detect_last_sea_confidence = sea_confidence
+                state.detect_last_vessel_ratio = vessel_ratio
+                state.detect_last_vessel_increase_ratio = vessel_increase_ratio
+                state.detect_last_sea_quality = sea_quality
+                state.detect_sea_state = sea_state
+                state.detect_sea_event = sea_event
+                state.detect_sea_method = sea_method
             self._save_state(state)
 
     @staticmethod
@@ -1646,6 +1924,10 @@ class DetectPipelineManager:
         confidence: float,
         imgsz: int,
         use_sam: bool,
+        calculate_sea_ratio: bool,
+        sea_only: bool,
+        sea_analysis_interval_sec: float,
+        detect_roi: dict[str, Any] | None,
         skip_dark_video: bool,
         device: str | int,
     ) -> dict[str, Any]:
@@ -1667,10 +1949,6 @@ class DetectPipelineManager:
             "brailer_monitor.web.detect_worker",
             "--video",
             str(video_path),
-            "--model",
-            str(model_path),
-            "--model-specs-file",
-            str(model_specs_file),
             "--output",
             str(job_dir),
             "--frame-stride",
@@ -1681,6 +1959,26 @@ class DetectPipelineManager:
             str(imgsz),
             "--sam",
             "yes" if use_sam else "no",
+            "--sea-ratio",
+            "yes" if calculate_sea_ratio else "no",
+            "--sea-only",
+            "yes" if sea_only else "no",
+            "--sea-engine",
+            "hybrid",
+            "--sea-device",
+            "cpu",
+            "--sea-analysis-interval-sec",
+            str(sea_analysis_interval_sec),
+            "--sea-state-file",
+            str(self._sea_state_path),
+            "--roi-top",
+            str((detect_roi or {}).get("top", 0.15)),
+            "--roi-right",
+            str((detect_roi or {}).get("right", 0.15)),
+            "--roi-bottom",
+            str((detect_roi or {}).get("bottom", 0.15)),
+            "--roi-left",
+            str((detect_roi or {}).get("left", 0.15)),
             "--skip-dark-video",
             "yes" if skip_dark_video else "no",
             "--device",
@@ -1690,6 +1988,8 @@ class DetectPipelineManager:
             "--events-file",
             str(events_file),
         ]
+        if not sea_only:
+            cmd.extend(["--model", str(model_path), "--model-specs-file", str(model_specs_file)])
 
         last_progress: dict[str, Any] | None = None
         events_offset = 0
@@ -1697,6 +1997,10 @@ class DetectPipelineManager:
             "frame_stride": frame_stride,
             "total_frames": self._planned_frame_count(video_path, frame_stride),
             "confidence": confidence,
+            "sea_ratio_enabled": bool(calculate_sea_ratio),
+            "sea_only": sea_only,
+            "sea_analysis_interval_sec": sea_analysis_interval_sec,
+            "detect_roi": dict(detect_roi or {}),
         }
 
         def _drain_progress() -> None:
@@ -1714,6 +2018,15 @@ class DetectPipelineManager:
                     int(prog.get("processed", 0)),
                     int(prog.get("total", 0)) or 1,
                     int(prog.get("with", 0)),
+                    _optional_float(prog.get("sea_ratio")),
+                    _optional_float(prog.get("sea_percent")),
+                    _optional_float(prog.get("sea_confidence")),
+                    _optional_float(prog.get("vessel_ratio")),
+                    _optional_float(prog.get("vessel_increase_ratio")),
+                    str(prog.get("sea_quality")) if prog.get("sea_quality") is not None else None,
+                    str(prog.get("sea_state")) if prog.get("sea_state") is not None else None,
+                    str(prog.get("sea_event")) if prog.get("sea_event") is not None else None,
+                    str(prog.get("sea_method")) if prog.get("sea_method") is not None else None,
                 )
 
         def _drain_events() -> None:
@@ -1821,6 +2134,10 @@ class DetectPipelineManager:
         confidence: float,
         imgsz: int,
         use_sam: bool,
+        calculate_sea_ratio: bool,
+        sea_only: bool,
+        sea_analysis_interval_sec: float,
+        detect_roi: dict[str, Any] | None,
         device: str | int,
     ) -> dict[str, Any]:
         job_dir = self._job_dir(job_id)
@@ -1840,10 +2157,6 @@ class DetectPipelineManager:
             "brailer_monitor.web.detect_worker",
             "--stream-url",
             stream_url,
-            "--model",
-            str(model_path),
-            "--model-specs-file",
-            str(model_specs_file),
             "--output",
             str(job_dir),
             "--frame-stride",
@@ -1854,6 +2167,26 @@ class DetectPipelineManager:
             str(imgsz),
             "--sam",
             "yes" if use_sam else "no",
+            "--sea-ratio",
+            "yes" if calculate_sea_ratio else "no",
+            "--sea-only",
+            "yes" if sea_only else "no",
+            "--sea-engine",
+            "hybrid",
+            "--sea-device",
+            "cpu",
+            "--sea-analysis-interval-sec",
+            str(sea_analysis_interval_sec),
+            "--sea-state-file",
+            str(self._sea_state_path),
+            "--roi-top",
+            str((detect_roi or {}).get("top", 0.15)),
+            "--roi-right",
+            str((detect_roi or {}).get("right", 0.15)),
+            "--roi-bottom",
+            str((detect_roi or {}).get("bottom", 0.15)),
+            "--roi-left",
+            str((detect_roi or {}).get("left", 0.15)),
             "--device",
             str(device),
             "--progress-file",
@@ -1863,10 +2196,20 @@ class DetectPipelineManager:
             "--stop-file",
             str(stop_file),
         ]
+        if not sea_only:
+            cmd.extend(["--model", str(model_path), "--model-specs-file", str(model_specs_file)])
 
         last_progress: dict[str, Any] | None = None
         events_offset = 0
-        event_manifest = {"frame_stride": frame_stride, "total_frames": 0, "confidence": confidence}
+        event_manifest = {
+            "frame_stride": frame_stride,
+            "total_frames": 0,
+            "confidence": confidence,
+            "sea_ratio_enabled": bool(calculate_sea_ratio),
+            "sea_only": sea_only,
+            "sea_analysis_interval_sec": sea_analysis_interval_sec,
+            "detect_roi": dict(detect_roi or {}),
+        }
 
         def _drain_progress() -> None:
             nonlocal last_progress
@@ -1883,6 +2226,15 @@ class DetectPipelineManager:
                     int(prog.get("processed", 0)),
                     int(prog.get("total", 0)),
                     int(prog.get("with", 0)),
+                    _optional_float(prog.get("sea_ratio")),
+                    _optional_float(prog.get("sea_percent")),
+                    _optional_float(prog.get("sea_confidence")),
+                    _optional_float(prog.get("vessel_ratio")),
+                    _optional_float(prog.get("vessel_increase_ratio")),
+                    str(prog.get("sea_quality")) if prog.get("sea_quality") is not None else None,
+                    str(prog.get("sea_state")) if prog.get("sea_state") is not None else None,
+                    str(prog.get("sea_event")) if prog.get("sea_event") is not None else None,
+                    str(prog.get("sea_method")) if prog.get("sea_method") is not None else None,
                 )
 
         def _drain_events() -> None:
@@ -1997,6 +2349,10 @@ class DetectPipelineManager:
         confidence: float,
         imgsz: int,
         use_sam: bool,
+        calculate_sea_ratio: bool,
+        sea_only: bool,
+        sea_analysis_interval_sec: float,
+        detect_roi: dict[str, Any] | None,
         skip_dark_video: bool,
         device: str | int,
         video_name: str,
@@ -2020,6 +2376,10 @@ class DetectPipelineManager:
                     confidence,
                     imgsz,
                     use_sam,
+                    calculate_sea_ratio,
+                    sea_only,
+                    sea_analysis_interval_sec,
+                    detect_roi,
                     skip_dark_video,
                     device,
                 )
@@ -2035,6 +2395,8 @@ class DetectPipelineManager:
                     state.detect_error = "GPU 메모리 부족으로 CPU에서 재시도 중입니다."
                     state.detect_processed_frames = 0
                     state.detect_progress_pct = 0.0
+                    state.detect_last_sea_ratio = None
+                    state.detect_last_sea_percent = None
                     self._save_state(state)
                 self._update_detect_progress(job_id, 0, planned, 0)
                 manifest = self._run_detection_subprocess(
@@ -2047,6 +2409,10 @@ class DetectPipelineManager:
                     confidence,
                     imgsz,
                     use_sam,
+                    calculate_sea_ratio,
+                    sea_only,
+                    sea_analysis_interval_sec,
+                    detect_roi,
                     skip_dark_video,
                     "cpu",
                 )
@@ -2075,6 +2441,9 @@ class DetectPipelineManager:
             job.processed_frames = manifest["frames_processed"]
             job.total_frames = manifest["frames_processed"]
             job.frames_with_detections = manifest["frames_with_detections"]
+            _apply_manifest_sea_analysis(job, manifest)
+            job.sea_ratio_enabled = bool(manifest.get("sea_ratio_enabled"))
+            job.sea_only = bool(manifest.get("sea_only"))
             job.manifest_path = str(manifest_path.resolve())
             self._save_job(job)
 
@@ -2085,6 +2454,17 @@ class DetectPipelineManager:
             state.detect_processed_frames = job.processed_frames
             state.detect_total_frames = job.total_frames
             state.detect_frames_with_objects = job.frames_with_detections
+            state.detect_last_sea_ratio = job.last_sea_ratio
+            state.detect_last_sea_percent = job.last_sea_percent
+            state.detect_last_sea_confidence = job.last_sea_confidence
+            state.detect_last_vessel_ratio = job.last_vessel_ratio
+            state.detect_last_vessel_increase_ratio = job.last_vessel_increase_ratio
+            state.detect_last_sea_quality = job.last_sea_quality
+            state.detect_sea_state = job.sea_state
+            state.detect_sea_event = job.sea_event
+            state.detect_sea_method = job.sea_method
+            state.detect_sea_ratio_enabled = job.sea_ratio_enabled
+            state.detect_sea_only = job.sea_only
             state.detect_batch_done = self._batch_done
             state.detect_timeline_events = summary["event_count"]
             self._save_state(state)
@@ -2134,6 +2514,10 @@ class DetectPipelineManager:
         confidence: float,
         imgsz: int,
         use_sam: bool,
+        calculate_sea_ratio: bool,
+        sea_only: bool,
+        sea_analysis_interval_sec: float,
+        detect_roi: dict[str, Any] | None,
         device: str | int,
         video_name: str,
     ) -> None:
@@ -2148,6 +2532,10 @@ class DetectPipelineManager:
                 confidence,
                 imgsz,
                 use_sam,
+                calculate_sea_ratio,
+                sea_only,
+                sea_analysis_interval_sec,
+                detect_roi,
                 device,
             )
             manifest["video_name"] = video_name
@@ -2171,6 +2559,9 @@ class DetectPipelineManager:
             job.processed_frames = int(manifest.get("frames_processed", 0))
             job.total_frames = job.processed_frames
             job.frames_with_detections = int(manifest.get("frames_with_detections", 0))
+            _apply_manifest_sea_analysis(job, manifest)
+            job.sea_ratio_enabled = bool(manifest.get("sea_ratio_enabled"))
+            job.sea_only = bool(manifest.get("sea_only"))
             job.manifest_path = str(manifest_path.resolve())
             self._save_job(job)
 
@@ -2183,6 +2574,17 @@ class DetectPipelineManager:
             state.detect_processed_frames = job.processed_frames
             state.detect_total_frames = job.total_frames
             state.detect_frames_with_objects = job.frames_with_detections
+            state.detect_last_sea_ratio = job.last_sea_ratio
+            state.detect_last_sea_percent = job.last_sea_percent
+            state.detect_last_sea_confidence = job.last_sea_confidence
+            state.detect_last_vessel_ratio = job.last_vessel_ratio
+            state.detect_last_vessel_increase_ratio = job.last_vessel_increase_ratio
+            state.detect_last_sea_quality = job.last_sea_quality
+            state.detect_sea_state = job.sea_state
+            state.detect_sea_event = job.sea_event
+            state.detect_sea_method = job.sea_method
+            state.detect_sea_ratio_enabled = job.sea_ratio_enabled
+            state.detect_sea_only = job.sea_only
             state.detect_queue_pending = 0
             state.detect_batch_total = 1
             state.detect_batch_done = 1

@@ -7,11 +7,85 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from brailer_monitor.detect_report import build_detection_report, write_detection_report_bundle
+from brailer_monitor.detect_report import (
+    build_detection_report,
+    render_detection_report_html,
+    write_detection_report_bundle,
+)
 from brailer_monitor.detect_timeline import compact_timeline_segments, merge_job_manifest
 
 
 class DetectReportTests(unittest.TestCase):
+    def test_report_includes_sea_encounter_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            timeline = Path(tmp) / "timeline.json"
+            merge_job_manifest(
+                timeline,
+                job_id="sea-job",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest={
+                    "fps": 1.0,
+                    "total_frames": 50,
+                    "frame_stride": 1,
+                    "sea_ratio_enabled": True,
+                    "sea_only": True,
+                    "object_detection_enabled": False,
+                    "sea_engine": "hybrid",
+                    "sea_analysis_interval_sec": 12.5,
+                    "frames_processed": 3,
+                    "frames": [
+                        {
+                            "frame_index": 10,
+                            "timestamp_sec": 10.0,
+                            "detections": [],
+                            "sea_ratio": 0.5,
+                            "sea_quality": "good",
+                            "sea_state": "encounter",
+                            "sea_event": "encounter_start",
+                            "sea_confidence": 0.8,
+                            "vessel_ratio": 0.02,
+                            "sea_method": "hybrid-test",
+                        },
+                        {
+                            "frame_index": 20,
+                            "timestamp_sec": 20.0,
+                            "detections": [],
+                            "sea_ratio": 0.4,
+                            "sea_quality": "good",
+                            "sea_state": "encounter",
+                            "sea_confidence": 0.7,
+                            "vessel_ratio": 0.03,
+                            "sea_method": "hybrid-test",
+                        },
+                        {
+                            "frame_index": 50,
+                            "timestamp_sec": 50.0,
+                            "detections": [],
+                            "sea_ratio": 0.8,
+                            "sea_quality": "good",
+                            "sea_state": "open_sea",
+                            "sea_event": "departure",
+                            "sea_confidence": 0.9,
+                            "vessel_ratio": 0.0,
+                            "sea_method": "hybrid-test",
+                        },
+                    ],
+                },
+            )
+
+            report = build_detection_report(timeline)
+            html_text = render_detection_report_html(report)
+
+            self.assertEqual(report.sea_analysis["enabled_video_count"], 1)
+            self.assertEqual(report.model_summary, "객체 탐지 안 함 (바다 영역만 분석)")
+            self.assertEqual(report.sea_analysis["encounter_count"], 1)
+            self.assertEqual(len(report.sea_encounters), 1)
+            self.assertEqual(report.sea_encounters[0]["duration_sec"], 40.0)
+            self.assertIn("바다 영역 및 조우 분석", html_text)
+            self.assertIn("hybrid-test", html_text)
+            self.assertIn("바다 분석 간격: 12.5초", html_text)
+            self.assertIn("최대 선박", html_text)
+
     def test_report_uses_highest_confidence_frame_per_segment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             timeline = Path(tmp) / "timeline.json"
@@ -49,6 +123,8 @@ class DetectReportTests(unittest.TestCase):
                                 }
                             ],
                             "preview_path": "frame_000010.jpg",
+                            "sea_ratio": 0.2,
+                            "sea_percent": 20.0,
                         },
                         {
                             "frame_index": 15,
@@ -65,6 +141,8 @@ class DetectReportTests(unittest.TestCase):
                                 }
                             ],
                             "preview_path": "frame_000015.jpg",
+                            "sea_ratio": 0.4,
+                            "sea_percent": 40.0,
                         },
                     ],
                 },
@@ -92,6 +170,10 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(row.avg_mask_width_px, 10.5)
             self.assertEqual(row.max_mask_width_px, 11)
             self.assertEqual(row.avg_mask_height_px, 10.0)
+            self.assertEqual(row.best_sea_ratio, 0.4)
+            self.assertEqual(row.avg_sea_ratio, 0.3)
+            self.assertEqual(row.min_sea_ratio, 0.2)
+            self.assertEqual(row.max_sea_ratio, 0.4)
             self.assertEqual(row.preview_url, "/api/pipeline/detect/job1/previews/frame_000015.jpg")
             self.assertEqual(row.video_url, "/api/pipeline/detect/job1/video")
             saved_report = build_detection_report(timeline, asset_url_prefix="/saved/result/jobs")
@@ -99,6 +181,7 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(saved_report.rows[0].video_url, "/saved/result/jobs/job1/video")
             self.assertEqual(len(report.timeline_frames), 2)
             self.assertEqual(report.timeline_frames[0].preview_url, "/api/pipeline/detect/job1/previews/frame_000010.jpg")
+            self.assertEqual(report.timeline_frames[0].sea_percent, 20.0)
             self.assertEqual(report.timeline_frames[0].segment_frame_number, 1)
             self.assertEqual(report.timeline_frames[0].segment_frame_count, 2)
             self.assertFalse(report.timeline_frames[0].is_representative)
@@ -138,6 +221,8 @@ class DetectReportTests(unittest.TestCase):
                                 }
                             ],
                             "preview_path": "frame_000001.jpg",
+                            "sea_ratio": 0.35,
+                            "sea_percent": 35.0,
                         }
                     ],
                 },
@@ -211,6 +296,8 @@ class DetectReportTests(unittest.TestCase):
             self.assertIn("소스: JJR-102283_stream04_260201_040016.mp4 외 1개 영상", html_text)
             self.assertIn("사용 모델: model A, model B", html_text)
             self.assertIn("Confidence ratio: 0.55", html_text)
+            self.assertIn("바다 비율", html_text)
+            self.assertIn("avg 35.0%", html_text)
             self.assertIn("후처리: 8초 이내 구간 병합, 크기 이상 제거, 세로형 빈 그물 제거, 색상 이상 제거", html_text)
             self.assertIn("탐지 0개 제거", html_text)
             self.assertIn("어두운 영상 건너뛰기: 전체 2개 중 1개 건너뜀", html_text)

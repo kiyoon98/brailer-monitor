@@ -51,6 +51,24 @@ class CaptureRequest(BaseModel):
     timestamp_sec: float = Field(ge=0)
 
 
+class DetectionRoiMargins(BaseModel):
+    top: float = Field(default=0.15, ge=0.0, le=49.0)
+    right: float = Field(default=0.15, ge=0.0, le=49.0)
+    bottom: float = Field(default=0.15, ge=0.0, le=49.0)
+    left: float = Field(default=0.15, ge=0.0, le=49.0)
+
+    def to_dict(self) -> dict[str, float]:
+        def ratio(value: float) -> float:
+            return value / 100.0 if value > 1.0 else value
+
+        return {
+            "top": ratio(self.top),
+            "right": ratio(self.right),
+            "bottom": ratio(self.bottom),
+            "left": ratio(self.left),
+        }
+
+
 class LakeRangeRequest(BaseModel):
     media: str | None = None
     year_folder: str | None = None
@@ -67,9 +85,13 @@ class LakeRangeRequest(BaseModel):
     end_day: int = Field(ge=1, le=31)
     end_hour: int = Field(ge=0, le=23)
     frame_stride: int = Field(default=5, ge=1)
-    confidence: float = Field(default=0.8, ge=0.05, le=1.0)
+    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
     use_sam: bool = True
+    detect_roi: DetectionRoiMargins = Field(default_factory=DetectionRoiMargins)
+    calculate_sea_ratio: bool = False
+    sea_only: bool = False
+    sea_analysis_interval_sec: float = Field(default=5.0, ge=0.0, le=300.0)
     skip_dark_video: bool = True
     device: str | int = 0
     check_exists: bool = True
@@ -79,9 +101,13 @@ class StreamDetectRequest(BaseModel):
     stream_url: str = Field(default="http://127.0.0.1:8081/live_04.m3u8", min_length=1)
     model_ids: list[str] | None = None
     frame_stride: int = Field(default=5, ge=1)
-    confidence: float = Field(default=0.8, ge=0.05, le=1.0)
+    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
     use_sam: bool = True
+    detect_roi: DetectionRoiMargins = Field(default_factory=DetectionRoiMargins)
+    calculate_sea_ratio: bool = False
+    sea_only: bool = False
+    sea_analysis_interval_sec: float = Field(default=5.0, ge=0.0, le=300.0)
     device: str | int = 0
 
 
@@ -91,6 +117,7 @@ class TimelineCompactRequest(BaseModel):
     remove_position_outliers: bool = True
     remove_size_outliers: bool = True
     remove_tall_thin_boxes: bool = True
+    remove_right_edge_detections: bool = False
     remove_static_short_tracks: bool = True
     remove_temporal_isolated: bool = True
     remove_color_outliers: bool = True
@@ -354,9 +381,16 @@ async def pipeline_detect(
     files: list[UploadFile] = File(...),
     model_ids: list[str] | None = Form(None),
     frame_stride: int = Form(5),
-    confidence: float = Form(0.8),
+    confidence: float = Form(0.6),
     imgsz: int = Form(416),
     use_sam: bool = Form(True),
+    calculate_sea_ratio: bool = Form(False),
+    sea_only: bool = Form(False),
+    sea_analysis_interval_sec: float = Form(5.0, ge=0.0, le=300.0),
+    detect_roi_top: float = Form(0.15),
+    detect_roi_right: float = Form(0.15),
+    detect_roi_bottom: float = Form(0.15),
+    detect_roi_left: float = Form(0.15),
     skip_dark_video: bool = Form(True),
     device: str | int = Form(0),
 ) -> dict:
@@ -389,6 +423,15 @@ async def pipeline_detect(
             confidence=confidence,
             imgsz=imgsz,
             use_sam=use_sam,
+            calculate_sea_ratio=calculate_sea_ratio,
+            sea_only=sea_only,
+            sea_analysis_interval_sec=sea_analysis_interval_sec,
+            detect_roi={
+                "top": detect_roi_top,
+                "right": detect_roi_right,
+                "bottom": detect_roi_bottom,
+                "left": detect_roi_left,
+            },
             skip_dark_video=skip_dark_video,
             device=device,
         )
@@ -500,6 +543,10 @@ async def pipeline_detect_lake(body: LakeRangeRequest) -> dict:
             confidence=body.confidence,
             imgsz=body.imgsz,
             use_sam=body.use_sam,
+            calculate_sea_ratio=body.calculate_sea_ratio,
+            sea_only=body.sea_only,
+            sea_analysis_interval_sec=body.sea_analysis_interval_sec,
+            detect_roi=body.detect_roi.to_dict(),
             skip_dark_video=body.skip_dark_video,
             device=body.device,
         )
@@ -517,6 +564,10 @@ async def pipeline_detect_stream(body: StreamDetectRequest) -> dict:
             confidence=body.confidence,
             imgsz=body.imgsz,
             use_sam=body.use_sam,
+            calculate_sea_ratio=body.calculate_sea_ratio,
+            sea_only=body.sea_only,
+            sea_analysis_interval_sec=body.sea_analysis_interval_sec,
+            detect_roi=body.detect_roi.to_dict(),
             device=body.device,
         )
     except FileNotFoundError as exc:
@@ -562,6 +613,7 @@ async def pipeline_detect_timeline_compact(body: TimelineCompactRequest | None =
                 remove_position_outliers=body.remove_position_outliers,
                 remove_size_outliers=body.remove_size_outliers,
                 remove_tall_thin_boxes=body.remove_tall_thin_boxes,
+                remove_right_edge_detections=body.remove_right_edge_detections,
                 remove_static_short_tracks=body.remove_static_short_tracks,
                 remove_temporal_isolated=body.remove_temporal_isolated,
                 remove_color_outliers=body.remove_color_outliers,

@@ -6,7 +6,10 @@ import argparse
 import json
 import logging
 import sys
+import tempfile
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -265,7 +268,7 @@ def cmd_detect_video(args: argparse.Namespace) -> int:
 
     task = load_task_type(Path(args.dataset_root))
     default_model = "models/brailer_detect.pt" if task == "detect" else "models/brailer_seg.pt"
-    model_path = Path(args.model) if args.model else Path(default_model)
+    model_path = None if args.sea_only else Path(args.model) if args.model else Path(default_model)
 
     manifest = detect_video(
         Path(args.video),
@@ -275,6 +278,16 @@ def cmd_detect_video(args: argparse.Namespace) -> int:
         confidence=args.confidence,
         device=args.device,
         use_segmentation=None if args.segmentation == "auto" else args.segmentation == "yes",
+        calculate_sea_ratio=args.sea_ratio or args.sea_only,
+        sea_only=args.sea_only,
+        sea_device=args.sea_device,
+        sea_analysis_interval_sec=args.sea_analysis_interval_sec,
+        detect_roi_margins={
+            "top": args.roi_top,
+            "right": args.roi_right,
+            "bottom": args.roi_bottom,
+            "left": args.roi_left,
+        },
         max_frames=args.max_frames,
         save_previews=not args.no_preview,
     )
@@ -283,6 +296,212 @@ def cmd_detect_video(args: argparse.Namespace) -> int:
         f"with detections: {manifest['frames_with_detections']} -> {args.out}/detections.json"
     )
     return 0
+
+
+def _parse_storage_hour(value: str, *, default_year: int) -> datetime:
+    text = value.strip().replace(" ", "T")
+    for fmt in ("%Y-%m-%dT%H", "%m-%dT%H"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if fmt == "%m-%dT%H":
+            parsed = parsed.replace(year=default_year)
+        return parsed
+    raise ValueError(f"Invalid storage hour: {value} (expected YYYY-MM-DDTHH or MM-DDTHH)")
+
+
+def _sea_record_emitter(args: argparse.Namespace):
+    from .sea_area_scan import format_sea_sample, format_sea_summary
+
+    output_handle = None
+    if args.jsonl_out:
+        output_path = Path(args.jsonl_out)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_handle = output_path.open("w", encoding="utf-8")
+
+    def emit(record: dict[str, object]) -> None:
+        if args.json_lines:
+            line = json.dumps(record, ensure_ascii=False)
+        elif record.get("type") == "summary":
+            line = format_sea_summary(record)
+        else:
+            line = format_sea_sample(record)
+        print(line, flush=True)
+        if output_handle is not None:
+            output_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            output_handle.flush()
+
+    return emit, output_handle
+
+
+def _sea_storage_candidates(args: argparse.Namespace) -> list[dict[str, str]]:
+    from .lake_video_source import build_lake_config_from_selection, discover_videos_in_range
+
+    if args.max_videos is not None and args.max_videos < 1:
+        raise ValueError("--max-videos must be at least 1")
+    if args.download_timeout <= 0:
+        raise ValueError("--download-timeout must be greater than 0")
+    if args.url:
+        filename = Path(urlparse(args.url).path).name or "storage-video.mp4"
+        return [{"filename": filename, "url": args.url}]
+
+    config_path = Path(args.config)
+    config = build_lake_config_from_selection(
+        {
+            "media": args.media,
+            "year_folder": args.year_folder,
+            "vessel": args.vessel,
+            "stream": args.camera_stream,
+            "minute_offsets": args.minute_offsets,
+            "second_suffixes": args.second_suffixes,
+        },
+        path=config_path,
+    )
+    if not args.start or not args.end:
+        raise ValueError("storage range mode requires both --start and --end")
+    start = _parse_storage_hour(args.start, default_year=config.year)
+    end = _parse_storage_hour(args.end, default_year=config.year)
+    if start.year != config.year or end.year != config.year:
+        raise ValueError(f"Storage range year must match {config.year} from --year-folder")
+    if end < start:
+        raise ValueError("Storage end hour is earlier than start hour")
+
+    videos = discover_videos_in_range(
+        start_month=start.month,
+        start_day=start.day,
+        start_hour=start.hour,
+        end_month=end.month,
+        end_day=end.day,
+        end_hour=end.hour,
+        config=config,
+        check_exists=not args.no_check_exists,
+    )
+    if args.max_videos is not None:
+        videos = videos[: args.max_videos]
+    return videos
+
+
+def _run_sea_storage(
+    args: argparse.Namespace,
+    *,
+    emit,
+    download_root: Path,
+    analyzer,
+) -> int:
+    from .lake_video_source import download_video
+    from .sea_area_scan import scan_recorded_sea_area
+
+    videos = _sea_storage_candidates(args)
+    if not videos:
+        print("No storage videos found for the selected range.", file=sys.stderr, flush=True)
+        return 1
+
+    print(f"Storage videos found: {len(videos)}", file=sys.stderr, flush=True)
+    completed = 0
+    failed = 0
+    total_samples = 0
+    weighted_ratio = 0.0
+    minimum: float | None = None
+    maximum: float | None = None
+    total_frames_visited = 0
+
+    for index, video in enumerate(videos, start=1):
+        filename = video["filename"]
+        url = video["url"]
+        local_path = download_root / filename
+        try:
+            if not local_path.exists() or local_path.stat().st_size <= 0:
+                print(f"[{index}/{len(videos)}] downloading {filename}", file=sys.stderr, flush=True)
+                download_video(url, local_path, timeout=args.download_timeout)
+            else:
+                print(f"[{index}/{len(videos)}] using cached {filename}", file=sys.stderr, flush=True)
+            def emit_sample(sample: dict[str, object]) -> None:
+                sample["source"] = url
+                emit(sample)
+
+            summary = scan_recorded_sea_area(
+                local_path,
+                source_name=filename,
+                frame_stride=args.frame_stride,
+                max_samples=args.max_samples,
+                on_sample=emit_sample,
+                analyzer=analyzer,
+            )
+            summary["source"] = url
+            emit(summary)
+            count = int(summary.get("samples") or 0)
+            average = summary.get("avg_sea_ratio")
+            min_ratio = summary.get("min_sea_ratio")
+            max_ratio = summary.get("max_sea_ratio")
+            total_samples += count
+            total_frames_visited += int(summary.get("frames_visited") or 0)
+            if average is not None:
+                weighted_ratio += float(average) * count
+            if min_ratio is not None:
+                minimum = float(min_ratio) if minimum is None else min(minimum, float(min_ratio))
+            if max_ratio is not None:
+                maximum = float(max_ratio) if maximum is None else max(maximum, float(max_ratio))
+            completed += 1
+        except Exception as exc:
+            failed += 1
+            print(f"[{index}/{len(videos)}] failed {filename}: {exc}", file=sys.stderr, flush=True)
+
+    overall_ratio = weighted_ratio / total_samples if total_samples else None
+    emit(
+        {
+            "type": "summary",
+            "source_type": "storage",
+            "source": "lake-storage",
+            "source_name": "storage total",
+            "samples": total_samples,
+            "avg_sea_ratio": round(overall_ratio, 4) if overall_ratio is not None else None,
+            "avg_sea_percent": round(overall_ratio * 100.0, 2) if overall_ratio is not None else None,
+            "min_sea_ratio": round(minimum, 4) if minimum is not None else None,
+            "max_sea_ratio": round(maximum, 4) if maximum is not None else None,
+            "frames_visited": total_frames_visited,
+            "videos_completed": completed,
+            "videos_failed": failed,
+            "end_reason": "completed" if failed == 0 else "completed_with_errors",
+        }
+    )
+    return 0 if completed > 0 else 1
+
+
+def cmd_sea_area(args: argparse.Namespace) -> int:
+    from .sea_area_analysis import SeaAreaAnalyzer
+    from .sea_area_scan import scan_stream_sea_area
+
+    emit, output_handle = _sea_record_emitter(args)
+    analyzer = SeaAreaAnalyzer(device=args.device, engine=args.sea_engine)
+    try:
+        if args.sea_source == "stream":
+            summary = scan_stream_sea_area(
+                args.url,
+                frame_stride=args.frame_stride,
+                max_samples=args.max_samples,
+                duration_sec=args.duration_sec,
+                on_sample=emit,
+                analyzer=analyzer,
+            )
+            emit(summary)
+            return 0
+
+        if args.download_dir:
+            download_root = Path(args.download_dir)
+            download_root.mkdir(parents=True, exist_ok=True)
+            return _run_sea_storage(args, emit=emit, download_root=download_root, analyzer=analyzer)
+        with tempfile.TemporaryDirectory(prefix="brailer-sea-area-") as temp_dir:
+            return _run_sea_storage(args, emit=emit, download_root=Path(temp_dir), analyzer=analyzer)
+    except KeyboardInterrupt:
+        print("Sea-area scan stopped by user.", file=sys.stderr, flush=True)
+        return 130
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"Sea-area scan failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    finally:
+        if output_handle is not None:
+            output_handle.close()
 
 
 def cmd_train(args: argparse.Namespace) -> int:
@@ -376,12 +595,61 @@ def build_parser() -> argparse.ArgumentParser:
     detect_vid.add_argument("--out", default="output/detect")
     detect_vid.add_argument("--dataset-root", default="data/dataset")
     detect_vid.add_argument("--frame-stride", type=int, default=5)
-    detect_vid.add_argument("--confidence", type=float, default=0.8)
+    detect_vid.add_argument("--confidence", type=float, default=0.6)
     detect_vid.add_argument("--device", default=0)
     detect_vid.add_argument("--segmentation", choices=["auto", "yes", "no"], default="auto")
+    detect_vid.add_argument("--sea-ratio", action="store_true", help="Calculate per-frame sea area ratio")
+    detect_vid.add_argument(
+        "--sea-only",
+        action="store_true",
+        help="Analyze sea area without loading or running an object detection model",
+    )
+    detect_vid.add_argument("--sea-device", default="cpu", help="Semantic sea model device (default: cpu)")
+    detect_vid.add_argument(
+        "--sea-analysis-interval-sec",
+        type=float,
+        default=5.0,
+        help="Sea analysis interval in seconds; 0 means every processed frame (max: 300)",
+    )
+    detect_vid.add_argument("--roi-top", type=float, default=0.15)
+    detect_vid.add_argument("--roi-right", type=float, default=0.15)
+    detect_vid.add_argument("--roi-bottom", type=float, default=0.15)
+    detect_vid.add_argument("--roi-left", type=float, default=0.15)
     detect_vid.add_argument("--max-frames", type=int, default=None)
     detect_vid.add_argument("--no-preview", action="store_true")
     detect_vid.set_defaults(func=cmd_detect_video)
+
+    sea_area = sub.add_parser("sea-area", help="Measure visible sea area from Lake storage or a live stream")
+    sea_sources = sea_area.add_subparsers(dest="sea_source", required=True)
+
+    sea_storage = sea_sources.add_parser("storage", help="Scan videos from Lake storage")
+    sea_storage.add_argument("--url", help="Single storage video URL; bypass Lake range discovery")
+    sea_storage.add_argument("--start", help="Range start hour (YYYY-MM-DDTHH or MM-DDTHH)")
+    sea_storage.add_argument("--end", help="Range end hour (YYYY-MM-DDTHH or MM-DDTHH)")
+    sea_storage.add_argument("--media", default=None, help="Lake media folder, e.g. lake_win")
+    sea_storage.add_argument("--year-folder", default=None, help="Lake year folder, e.g. 2026_decrypted")
+    sea_storage.add_argument("--vessel", default=None, help="Vessel name, e.g. JJR-102283")
+    sea_storage.add_argument("--camera-stream", default=None, help="Stored camera stream, e.g. stream04")
+    sea_storage.add_argument("--minute-offsets", default=None, help="Comma-separated start minute offsets, e.g. 0,1,2,3,4")
+    sea_storage.add_argument("--second-suffixes", default=None, help="Comma-separated second suffixes, e.g. 16")
+    sea_storage.add_argument("--config", default="config/lake_video.json")
+    sea_storage.add_argument("--no-check-exists", action="store_true", help="Do not probe candidate URLs before scanning")
+    sea_storage.add_argument("--max-videos", type=int, default=None, help="Maximum number of discovered videos")
+    sea_storage.add_argument("--download-dir", default=None, help="Keep or reuse downloaded storage videos here")
+    sea_storage.add_argument("--download-timeout", type=float, default=120.0)
+
+    sea_stream = sea_sources.add_parser("stream", help="Scan a live HLS/HTTP stream")
+    sea_stream.add_argument("--url", default="http://127.0.0.1:8081/live_04.m3u8")
+    sea_stream.add_argument("--duration-sec", type=float, default=None, help="Stop after this many seconds")
+
+    for sea_parser in (sea_storage, sea_stream):
+        sea_parser.add_argument("--frame-stride", type=int, default=30, help="Calculate sea area every N frames")
+        sea_parser.add_argument("--max-samples", type=int, default=None, help="Maximum sampled frames per source")
+        sea_parser.add_argument("--sea-engine", choices=["hybrid", "legacy"], default="hybrid")
+        sea_parser.add_argument("--device", default="cpu", help="Semantic model device (default: cpu)")
+        sea_parser.add_argument("--json-lines", action="store_true", help="Print frame records as JSON Lines")
+        sea_parser.add_argument("--jsonl-out", default=None, help="Also write frame and summary records to a JSONL file")
+        sea_parser.set_defaults(func=cmd_sea_area)
 
     train = sub.add_parser("train", help="Train YOLO from config/dataset.yaml (after import-cvat)")
     train.add_argument("--dataset", default="config/dataset.yaml")

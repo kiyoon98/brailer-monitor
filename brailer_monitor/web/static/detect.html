@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Brailer YOLO Pipeline</title>
-  <link rel="stylesheet" href="/static/detect.css?v=3" />
+  <link rel="stylesheet" href="/static/detect.css?v=5" />
 </head>
 <body>
   <header class="header">
@@ -106,10 +106,20 @@
       </div>
       <div class="row">
         <label>프레임 간격 <input id="frameStride" type="number" value="5" min="1" /></label>
-        <label>Confidence <input id="confidence" type="number" value="0.8" min="0.05" max="1" step="0.05" /></label>
+        <label>Confidence <input id="confidence" type="number" value="0.6" min="0.05" max="1" step="0.05" /></label>
         <label>추론 크기 <input id="detectImgsz" type="number" value="416" min="320" max="1280" step="32" /></label>
         <label><input id="useSam" type="checkbox" checked /> 정밀 마스크(SAM)</label>
+        <label><input id="calculateSeaRatio" type="checkbox" /> 바다 영역 계산</label>
+        <label><input id="seaOnly" type="checkbox" /> 바다 영역만 분석(객체 탐지 안 함)</label>
+        <label>바다 분석 간격(초) <input id="seaAnalysisInterval" type="number" value="5" min="0" max="300" step="1" title="0은 처리하는 모든 프레임" disabled /></label>
         <label><input id="skipDarkVideo" type="checkbox" checked /> 어두운 영상 건너뛰기(파일/Lake)</label>
+      </div>
+      <div class="row roi-controls">
+        <span class="range-label">탐지 제외 여백(%)</span>
+        <label>상 <input id="detectRoiTop" type="number" value="15" min="0" max="49" step="1" /></label>
+        <label>우 <input id="detectRoiRight" type="number" value="15" min="0" max="49" step="1" /></label>
+        <label>하 <input id="detectRoiBottom" type="number" value="15" min="0" max="49" step="1" /></label>
+        <label>좌 <input id="detectRoiLeft" type="number" value="15" min="0" max="49" step="1" /></label>
       </div>
       <div class="row detect-actions">
         <button id="detectBtn" type="button" disabled>탐지 시작</button>
@@ -119,6 +129,22 @@
       <div id="detectProgressWrap" class="progress-wrap hidden">
         <div class="progress-bar"><div id="detectProgressBar" class="progress-fill"></div></div>
         <span id="detectProgressText" class="progress-text"></span>
+      </div>
+      <div id="seaScaleWrap" class="sea-scale hidden" aria-live="polite">
+        <div class="sea-scale-head">
+          <span class="sea-scale-title">현재 프레임 바다 영역</span>
+          <strong id="seaScaleValue" class="sea-scale-value">--</strong>
+        </div>
+        <div class="sea-scale-track">
+          <div id="seaScaleFill" class="sea-scale-fill"></div>
+          <div id="seaScaleMarker" class="sea-scale-marker"></div>
+        </div>
+        <div class="sea-scale-labels"><span>0%</span><span>50%</span><span>100%</span></div>
+        <div class="sea-analysis-meta">
+          <span id="seaStateValue">보정 대기</span>
+          <span id="seaConfidenceValue">신뢰도 --</span>
+          <span id="seaVesselValue">선박 --</span>
+        </div>
       </div>
       <div id="detectStatus" class="status"></div>
     </section>
@@ -136,7 +162,7 @@
         <label><input id="postRemovePositionOutliers" type="checkbox" checked /> 위치 이상 제거</label>
         <label><input id="postRemoveSizeOutliers" type="checkbox" checked /> 크기 이상 제거</label>
         <label><input id="postRemoveTallThinBoxes" type="checkbox" checked /> 세로형 빈 그물 제거</label>
-        <label><input id="postRemoveStaticShortTracks" type="checkbox" checked /> 3-4초 정지 제거</label>
+        <label><input id="postRemoveStaticShortTracks" type="checkbox" checked /> 같은 위치 정지 제거</label>
         <label><input id="postRemoveTemporalIsolated" type="checkbox" checked /> 시간 고립 제거</label>
         <label><input id="postRemoveColorOutliers" type="checkbox" checked /> 색상 이상 제거</label>
         <button id="compactTimelineBtn" type="button" class="secondary">후처리 적용</button>
@@ -240,6 +266,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
-  <script src="/static/detect.js?v=78"></script>
+  <script src="/static/detect.js?v=86"></script>
 </body>
 </html>

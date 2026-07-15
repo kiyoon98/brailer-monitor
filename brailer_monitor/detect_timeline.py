@@ -16,6 +16,14 @@ from .video_time import absolute_frame_time, format_absolute_time, parse_video_s
 TEMPORAL_ISOLATION_WINDOW_SEC = 10.0
 TEMPORAL_SHORT_BURST_MAX_FRAMES = 3
 TEMPORAL_SHORT_BURST_MAX_DURATION_SEC = 1.0
+STATIC_POSITION_MAX_GAP_SEC = 8.0
+STATIC_POSITION_MIN_DURATION_SEC = 3.0
+STATIC_POSITION_MIN_FRAMES = 6
+STATIC_POSITION_MAX_CENTER_MOVE_PX = 30.0
+STATIC_POSITION_MAX_CENTER_MOVE_DIAG_RATIO = 0.2
+EDGE_DEFAULT_FRAME_WIDTH = 1280.0
+EDGE_CENTER_X_RATIO = 0.85
+EDGE_SIDE_X_RATIO = 0.985
 
 
 def _now_iso() -> str:
@@ -141,6 +149,13 @@ def _frame_to_dict(
         out["mask_width_px"] = int(mask_width_px)
     if mask_height_px is not None:
         out["mask_height_px"] = int(mask_height_px)
+    for key in ("sea_ratio", "sea_percent", "sea_area_px", "sea_method"):
+        value = event.get(key)
+        if value is not None:
+            out[key] = value
+    detect_roi = event.get("detect_roi")
+    if detect_roi is not None:
+        out["detect_roi"] = detect_roi
     return out
 
 
@@ -273,6 +288,14 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
 
     confidences = [float(f.get("confidence", 0)) for f in frames]
     areas = [int(f.get("area_px") or 0) for f in frames]
+    sea_ratios: list[float] = []
+    for frame in frames:
+        try:
+            sea_ratio = float(frame.get("sea_ratio"))
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= sea_ratio <= 1.0:
+            sea_ratios.append(sea_ratio)
     best_area_frame = max(frames, key=lambda f: int(f.get("area_px") or 0), default=frames[0])
     video_names = list(dict.fromkeys(str(f.get("video_name") or "") for f in frames if f.get("video_name")))
     job_ids = list(dict.fromkeys(str(f.get("job_id") or "") for f in frames if f.get("job_id")))
@@ -309,6 +332,16 @@ def _segment_from_frames(frames: list[dict[str, Any]]) -> dict[str, Any]:
         value = best_area_frame.get(key)
         if value is not None:
             out[key] = int(value)
+    if sea_ratios:
+        avg_sea_ratio = sum(sea_ratios) / len(sea_ratios)
+        out["sea_ratio"] = round(avg_sea_ratio, 4)
+        out["avg_sea_ratio"] = round(avg_sea_ratio, 4)
+        out["min_sea_ratio"] = round(min(sea_ratios), 4)
+        out["max_sea_ratio"] = round(max(sea_ratios), 4)
+        out["avg_sea_percent"] = round(avg_sea_ratio * 100.0, 2)
+    detect_roi = first.get("detect_roi")
+    if detect_roi is not None:
+        out["detect_roi"] = detect_roi
     return out
 
 
@@ -374,7 +407,20 @@ def _bbox_values(det: dict[str, Any]) -> list[float] | None:
 
 def _flatten_timeline_detections(timeline: dict[str, Any]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
+    video_widths: dict[str, float] = {}
+    for video in timeline.get("videos", []) or []:
+        try:
+            width = float(video.get("width") or 0.0)
+        except (TypeError, ValueError):
+            width = 0.0
+        if width > 0:
+            video_widths[str(video.get("video_name") or "")] = width
     for event_index, event in enumerate(timeline.get("events", []) or []):
+        video_name = str(event.get("video_name") or "")
+        try:
+            frame_width = float(event.get("width") or video_widths.get(video_name) or EDGE_DEFAULT_FRAME_WIDTH)
+        except (TypeError, ValueError):
+            frame_width = EDGE_DEFAULT_FRAME_WIDTH
         for det_index, det in enumerate(event.get("detections") or []):
             bbox = _bbox_values(det)
             if bbox is None:
@@ -394,7 +440,8 @@ def _flatten_timeline_detections(timeline: dict[str, Any]) -> list[dict[str, Any
                     "center": ((x1 + x2) / 2.0, (y1 + y2) / 2.0),
                     "diag": ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5,
                     "area": area,
-                    "group": (str(event.get("video_name") or ""), str(det.get("class_name") or "")),
+                    "frame_width": frame_width,
+                    "group": (video_name, str(det.get("class_name") or "")),
                     "frame_index": int(event.get("frame_index") or 0),
                     "timestamp_sec": float(event.get("timestamp_sec") or 0.0),
                     "job_id": str(event.get("job_id") or ""),
@@ -458,6 +505,29 @@ def _tall_thin_box_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
     return remove
 
 
+def _right_edge_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
+    remove: set[tuple[int, int]] = set()
+    for entry in entries:
+        frame_width = float(entry.get("frame_width") or EDGE_DEFAULT_FRAME_WIDTH)
+        if frame_width <= 0:
+            frame_width = EDGE_DEFAULT_FRAME_WIDTH
+        center_x = float(entry["center"][0])
+        left_x = float(entry["bbox"][0])
+        right_x = float(entry["bbox"][2])
+        left_center_limit = frame_width * (1.0 - EDGE_CENTER_X_RATIO)
+        right_center_limit = frame_width * EDGE_CENTER_X_RATIO
+        left_edge_limit = frame_width * (1.0 - EDGE_SIDE_X_RATIO)
+        right_edge_limit = frame_width * EDGE_SIDE_X_RATIO
+        if (
+            center_x <= left_center_limit
+            or center_x >= right_center_limit
+            or left_x <= left_edge_limit
+            or right_x >= right_edge_limit
+        ):
+            remove.add(entry["key"])
+    return remove
+
+
 def _static_short_track_keys(entries: list[dict[str, Any]], videos: list[dict[str, Any]]) -> set[tuple[int, int]]:
     remove: set[tuple[int, int]] = set()
     sample_steps: dict[str, float] = {}
@@ -474,9 +544,9 @@ def _static_short_track_keys(entries: list[dict[str, Any]], videos: list[dict[st
     for (video_name, _class_name), group in _group_entries(entries).items():
         ordered = sorted(group, key=lambda entry: (entry["frame_index"], entry["timestamp_sec"]))
         runs: list[list[dict[str, Any]]] = []
+        expected_step = max(0.001, sample_steps.get(video_name, 1.0))
+        max_time_gap = max(STATIC_POSITION_MAX_GAP_SEC, expected_step * 1.75)
         for entry in ordered:
-            expected_step = max(0.001, sample_steps.get(video_name, 1.0))
-            max_time_gap = max(1.0, expected_step * 1.75)
             if not runs:
                 runs.append([entry])
                 continue
@@ -489,12 +559,20 @@ def _static_short_track_keys(entries: list[dict[str, Any]], videos: list[dict[st
 
         for run in runs:
             duration_sec = float(run[-1]["timestamp_sec"]) - float(run[0]["timestamp_sec"])
-            if duration_sec < 3.0 or duration_sec > 4.0:
+            if duration_sec < STATIC_POSITION_MIN_DURATION_SEC and len(run) < STATIC_POSITION_MIN_FRAMES:
                 continue
-            cx0, cy0 = run[0]["center"]
-            max_move = max(((entry["center"][0] - cx0) ** 2 + (entry["center"][1] - cy0) ** 2) ** 0.5 for entry in run)
+            median_x = median([entry["center"][0] for entry in run])
+            median_y = median([entry["center"][1] for entry in run])
+            max_move = max(
+                ((entry["center"][0] - median_x) ** 2 + (entry["center"][1] - median_y) ** 2) ** 0.5
+                for entry in run
+            )
             med_diag = median([entry["diag"] for entry in run])
-            if max_move <= max(2.0, med_diag * 0.03):
+            motion_threshold = max(
+                STATIC_POSITION_MAX_CENTER_MOVE_PX,
+                med_diag * STATIC_POSITION_MAX_CENTER_MOVE_DIAG_RATIO,
+            )
+            if max_move <= motion_threshold:
                 remove.update(entry["key"] for entry in run)
     return remove
 
@@ -514,12 +592,36 @@ def _similar_temporal_detection(a: dict[str, Any], b: dict[str, Any]) -> bool:
     height_ratio = height_b / height_a
     if not (0.5 <= area_ratio <= 2.0 and 0.5 <= width_ratio <= 2.0 and 0.5 <= height_ratio <= 2.0):
         return False
+    return True
 
-    ax, ay = a["center"]
-    bx, by = b["center"]
-    distance = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
-    max_diag = max(float(a.get("diag") or 0.0), float(b.get("diag") or 0.0))
-    return distance <= max(80.0, max_diag * 0.75)
+
+def _temporal_merge_protected_keys(
+    entries: list[dict[str, Any]],
+    *,
+    merge_gap_sec: float,
+) -> set[tuple[int, int]]:
+    protected: set[tuple[int, int]] = set()
+    gap_limit = max(0.0, float(merge_gap_sec))
+    if gap_limit <= 0:
+        return protected
+
+    for group in _group_entries(entries).values():
+        ordered = sorted(group, key=lambda entry: (entry["timestamp_sec"], entry["frame_index"]))
+        if len(ordered) < 2:
+            continue
+        runs: list[list[dict[str, Any]]] = [[ordered[0]]]
+        for entry in ordered[1:]:
+            prev = runs[-1][-1]
+            time_gap = float(entry["timestamp_sec"]) - float(prev["timestamp_sec"])
+            if 0.0 <= time_gap <= gap_limit:
+                runs[-1].append(entry)
+            else:
+                runs.append([entry])
+
+        for run in runs:
+            if len(run) >= 2:
+                protected.update(entry["key"] for entry in run)
+    return protected
 
 
 def _temporal_isolated_keys(
@@ -527,15 +629,22 @@ def _temporal_isolated_keys(
     *,
     window_sec: float = TEMPORAL_ISOLATION_WINDOW_SEC,
     protect_tail_sec: float = 0.0,
+    merge_protect_gap_sec: float = 0.0,
 ) -> set[tuple[int, int]]:
     remove: set[tuple[int, int]] = set()
     window = max(0.0, float(window_sec))
     if window <= 0:
         return remove
+    protected_by_merge = _temporal_merge_protected_keys(
+        entries,
+        merge_gap_sec=merge_protect_gap_sec,
+    )
 
     for group in _group_entries(entries).values():
         latest_timestamp = max((float(entry["timestamp_sec"]) for entry in group), default=0.0)
         def can_remove(entry: dict[str, Any]) -> bool:
+            if entry["key"] in protected_by_merge:
+                return False
             return protect_tail_sec <= 0 or float(entry["timestamp_sec"]) < latest_timestamp - protect_tail_sec
 
         if len(group) < 2:
@@ -694,6 +803,7 @@ def compact_timeline_segments(
     remove_position_outliers: bool = False,
     remove_size_outliers: bool = False,
     remove_tall_thin_boxes: bool = False,
+    remove_right_edge_detections: bool = False,
     remove_static_short_tracks: bool = False,
     remove_temporal_isolated: bool = False,
     temporal_isolation_protect_tail_sec: float = 0.0,
@@ -711,13 +821,18 @@ def compact_timeline_segments(
     remove_keys: set[tuple[int, int]] = set()
     for name, enabled, finder in (
         ("position_outlier", remove_position_outliers, lambda: _position_outlier_keys(entries)),
+        ("right_edge", remove_right_edge_detections, lambda: _right_edge_keys(entries)),
         ("size_outlier", remove_size_outliers, lambda: _size_outlier_keys(entries)),
         ("tall_thin_box", remove_tall_thin_boxes, lambda: _tall_thin_box_keys(entries)),
         ("static_short_track", remove_static_short_tracks, lambda: _static_short_track_keys(entries, timeline.get("videos", []))),
         (
             "temporal_isolated",
             remove_temporal_isolated,
-            lambda: _temporal_isolated_keys(entries, protect_tail_sec=temporal_isolation_protect_tail_sec),
+            lambda: _temporal_isolated_keys(
+                entries,
+                protect_tail_sec=temporal_isolation_protect_tail_sec,
+                merge_protect_gap_sec=float(max_gap_sec) if merge_segments else 0.0,
+            ),
         ),
         ("color_outlier", remove_color_outliers, lambda: _color_outlier_keys(entries, jobs_root)),
     ):
@@ -725,7 +840,7 @@ def compact_timeline_segments(
             remove_by_condition[name] = 0
             continue
         keys = finder()
-        remove_by_condition[name] = len(keys)
+        remove_by_condition[name] = len(keys - remove_keys)
         remove_keys.update(keys)
 
     removed_detections, removed_events = _remove_detections(timeline, remove_keys)
@@ -740,12 +855,25 @@ def compact_timeline_segments(
         "remove_position_outliers": bool(remove_position_outliers),
         "remove_size_outliers": bool(remove_size_outliers),
         "remove_tall_thin_boxes": bool(remove_tall_thin_boxes),
+        "remove_right_edge_detections": bool(remove_right_edge_detections),
+        "right_edge_center_x_ratio": EDGE_CENTER_X_RATIO,
+        "right_edge_right_x_ratio": EDGE_SIDE_X_RATIO,
+        "right_edge_default_frame_width": EDGE_DEFAULT_FRAME_WIDTH,
+        "edge_center_x_ratio": EDGE_CENTER_X_RATIO,
+        "edge_side_x_ratio": EDGE_SIDE_X_RATIO,
+        "edge_default_frame_width": EDGE_DEFAULT_FRAME_WIDTH,
         "remove_static_short_tracks": bool(remove_static_short_tracks),
+        "static_position_max_gap_sec": STATIC_POSITION_MAX_GAP_SEC,
+        "static_position_min_duration_sec": STATIC_POSITION_MIN_DURATION_SEC,
+        "static_position_min_frames": STATIC_POSITION_MIN_FRAMES,
+        "static_position_max_center_move_px": STATIC_POSITION_MAX_CENTER_MOVE_PX,
+        "static_position_max_center_move_diag_ratio": STATIC_POSITION_MAX_CENTER_MOVE_DIAG_RATIO,
         "remove_temporal_isolated": bool(remove_temporal_isolated),
         "temporal_isolation_window_sec": TEMPORAL_ISOLATION_WINDOW_SEC,
         "temporal_short_burst_max_frames": TEMPORAL_SHORT_BURST_MAX_FRAMES,
         "temporal_short_burst_max_duration_sec": TEMPORAL_SHORT_BURST_MAX_DURATION_SEC,
         "temporal_isolation_protect_tail_sec": float(temporal_isolation_protect_tail_sec),
+        "temporal_merge_protect_gap_sec": float(max_gap_sec) if merge_segments else 0.0,
         "remove_color_outliers": bool(remove_color_outliers),
         "before_event_count": before_events,
         "removed_detection_count": removed_detections,
@@ -840,7 +968,7 @@ def _event_from_frame(
     ts = float(frame.get("timestamp_sec", 0))
     video_start = parse_video_start_time(video_name)
     abs_dt = absolute_frame_time(video_name, ts)
-    return {
+    event = {
         "job_id": job_id,
         "video_name": video_name,
         "frame_index": frame.get("frame_index"),
@@ -850,6 +978,148 @@ def _event_from_frame(
         "absolute_time_label": format_absolute_time(abs_dt),
         "preview_path": frame.get("preview_path"),
         "detections": detections,
+    }
+    for key in ("sea_ratio", "sea_percent", "sea_area_px", "sea_method"):
+        value = frame.get(key)
+        if value is not None:
+            event[key] = value
+    detect_roi = frame.get("detect_roi")
+    if detect_roi is not None:
+        event["detect_roi"] = detect_roi
+    for key in ("width", "height"):
+        value = frame.get(key)
+        if value is not None:
+            event[key] = value
+    return event
+
+
+def _sea_frame_time(video_name: str, frame: dict[str, Any]) -> dict[str, Any]:
+    timestamp = float(frame.get("timestamp_sec") or 0.0)
+    absolute = absolute_frame_time(video_name, timestamp)
+    return {
+        "timestamp_sec": round(timestamp, 3),
+        "absolute_time": absolute.isoformat() if absolute is not None else None,
+        "time_label": format_absolute_time(absolute) or f"{timestamp:.3f}s",
+    }
+
+
+def _sea_analysis_from_manifest(video_name: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    frames = [
+        frame
+        for frame in manifest.get("frames", [])
+        if isinstance(frame, dict)
+        and any(
+            frame.get(key) is not None
+            for key in ("sea_quality", "sea_state", "sea_ratio", "sea_method")
+        )
+    ]
+    enabled = bool(manifest.get("sea_ratio_enabled")) or bool(frames)
+    if not enabled:
+        return {"enabled": False, "sample_count": 0, "encounter_segments": [], "events": []}
+
+    state_counts: dict[str, int] = defaultdict(int)
+    methods: list[str] = []
+    ratios: list[float] = []
+    confidences: list[float] = []
+    vessel_ratios: list[float] = []
+    events: list[dict[str, Any]] = []
+    segments: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    def close_segment(end_frame: dict[str, Any]) -> None:
+        nonlocal current
+        if current is None:
+            return
+        end_time = _sea_frame_time(video_name, end_frame)
+        current.update(
+            {
+                "end_timestamp_sec": end_time["timestamp_sec"],
+                "end_absolute_time": end_time["absolute_time"],
+                "end_time": end_time["time_label"],
+                "duration_sec": round(
+                    max(0.0, float(end_time["timestamp_sec"]) - float(current["start_timestamp_sec"])),
+                    3,
+                ),
+            }
+        )
+        segments.append(current)
+        current = None
+
+    last_encounter_frame: dict[str, Any] | None = None
+    for frame in frames:
+        state = str(frame.get("sea_state") or "unknown")
+        quality = str(frame.get("sea_quality") or "unknown")
+        if quality == "unknown":
+            state = "unknown"
+        state_counts[state] += 1
+
+        method = str(frame.get("sea_method") or "").strip()
+        if method and method not in methods:
+            methods.append(method)
+        if state != "unknown":
+            for key, output in (
+                ("sea_ratio", ratios),
+                ("sea_confidence", confidences),
+                ("vessel_ratio", vessel_ratios),
+            ):
+                try:
+                    value = float(frame.get(key))
+                except (TypeError, ValueError):
+                    continue
+                output.append(value)
+
+        event_name = str(frame.get("sea_event") or "").strip()
+        if event_name:
+            events.append({"event": event_name, **_sea_frame_time(video_name, frame)})
+
+        if state == "encounter":
+            frame_time = _sea_frame_time(video_name, frame)
+            if current is None:
+                current = {
+                    "start_timestamp_sec": frame_time["timestamp_sec"],
+                    "start_absolute_time": frame_time["absolute_time"],
+                    "start_time": frame_time["time_label"],
+                    "sample_count": 0,
+                    "min_sea_ratio": None,
+                    "max_vessel_ratio": None,
+                }
+            current["sample_count"] += 1
+            ratio = frame.get("sea_ratio")
+            vessel = frame.get("vessel_ratio")
+            if ratio is not None:
+                ratio = float(ratio)
+                previous = current.get("min_sea_ratio")
+                current["min_sea_ratio"] = round(ratio if previous is None else min(previous, ratio), 4)
+            if vessel is not None:
+                vessel = float(vessel)
+                previous = current.get("max_vessel_ratio")
+                current["max_vessel_ratio"] = round(vessel if previous is None else max(previous, vessel), 4)
+            last_encounter_frame = frame
+        elif state != "unknown" and current is not None:
+            close_segment(frame if event_name == "departure" else (last_encounter_frame or frame))
+
+    if current is not None:
+        close_segment(last_encounter_frame or frames[-1])
+
+    unknown_count = int(state_counts.get("unknown", 0))
+    sample_count = len(frames)
+    valid_count = sample_count - unknown_count
+    return {
+        "enabled": True,
+        "engine": manifest.get("sea_engine"),
+        "methods": methods,
+        "sample_count": sample_count,
+        "valid_count": valid_count,
+        "unknown_count": unknown_count,
+        "unknown_fraction": round(unknown_count / sample_count, 4) if sample_count else 0.0,
+        "state_counts": dict(state_counts),
+        "avg_sea_ratio": round(sum(ratios) / len(ratios), 4) if ratios else None,
+        "min_sea_ratio": round(min(ratios), 4) if ratios else None,
+        "max_sea_ratio": round(max(ratios), 4) if ratios else None,
+        "avg_confidence": round(sum(confidences) / len(confidences), 4) if confidences else None,
+        "max_vessel_ratio": round(max(vessel_ratios), 4) if vessel_ratios else None,
+        "events": events,
+        "encounter_segments": segments,
     }
 
 
@@ -877,14 +1147,22 @@ def _upsert_video_record(
         "fps": manifest.get("fps"),
         "frame_stride": manifest.get("frame_stride"),
         "confidence": manifest.get("confidence"),
+        "width": manifest.get("width"),
+        "height": manifest.get("height"),
         "total_frames": manifest.get("total_frames"),
         "frames_processed": manifest.get("frames_processed", 0),
         "frames_with_detections": manifest.get("frames_with_detections", 0),
         "model": manifest.get("model"),
         "models": manifest.get("models") or [],
         "ensemble": bool(manifest.get("ensemble")),
+        "object_detection_enabled": bool(manifest.get("object_detection_enabled", True)),
+        "sea_only": bool(manifest.get("sea_only")),
+        "detect_roi": manifest.get("detect_roi"),
         "dark_skip_enabled": bool(manifest.get("dark_skip_enabled")),
         "dark_video_assessment": manifest.get("dark_video_assessment"),
+        "sea_ratio_summary": manifest.get("sea_ratio_summary"),
+        "sea_analysis_interval_sec": manifest.get("sea_analysis_interval_sec"),
+        "sea_analysis": _sea_analysis_from_manifest(video_name, manifest),
         "skipped": bool(manifest.get("skipped")),
         "skip_reason": manifest.get("skip_reason"),
         "added_at": _now_iso(),

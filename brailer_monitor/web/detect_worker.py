@@ -37,11 +37,20 @@ def _is_cpu_device(device: str | int) -> bool:
     return isinstance(device, str) and device.lower() == "cpu"
 
 
-def _write_progress(progress_file: Path, processed: int, total: int, with_det: int) -> None:
+def _write_progress(
+    progress_file: Path,
+    processed: int,
+    total: int,
+    with_det: int,
+    sea_stats: dict | None = None,
+) -> None:
     tmp = progress_file.with_suffix(progress_file.suffix + ".tmp")
     try:
+        payload = {"processed": processed, "total": total, "with": with_det}
+        if sea_stats:
+            payload.update(sea_stats)
         tmp.write_text(
-            json.dumps({"processed": processed, "total": total, "with": with_det}),
+            json.dumps(payload),
             encoding="utf-8",
         )
         os.replace(tmp, progress_file)
@@ -69,11 +78,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-specs-file")
     parser.add_argument("--output", required=True)
     parser.add_argument("--frame-stride", type=int, default=5)
-    parser.add_argument("--confidence", type=float, default=0.8)
+    parser.add_argument("--confidence", type=float, default=0.6)
     parser.add_argument("--imgsz", type=int, default=416)
     parser.add_argument("--device", default="0")
     parser.add_argument("--segmentation", choices=["auto", "yes", "no"], default="auto")
     parser.add_argument("--sam", choices=["yes", "no"], default="yes")
+    parser.add_argument("--sea-ratio", choices=["yes", "no"], default="no")
+    parser.add_argument("--sea-only", choices=["yes", "no"], default="no")
+    parser.add_argument("--sea-engine", choices=["hybrid", "legacy"], default="hybrid")
+    parser.add_argument("--sea-device", default="cpu")
+    parser.add_argument("--sea-analysis-interval-sec", type=float, default=5.0)
+    parser.add_argument("--sea-state-file")
+    parser.add_argument("--roi-top", type=float, default=0.15)
+    parser.add_argument("--roi-right", type=float, default=0.15)
+    parser.add_argument("--roi-bottom", type=float, default=0.15)
+    parser.add_argument("--roi-left", type=float, default=0.15)
     parser.add_argument("--skip-dark-video", choices=["yes", "no"], default="no")
     parser.add_argument("--progress-file", required=True)
     parser.add_argument("--events-file")
@@ -93,17 +112,39 @@ def main(argv: list[str] | None = None) -> int:
 
     use_segmentation = None if args.segmentation == "auto" else args.segmentation == "yes"
     use_sam = args.sam == "yes"
+    calculate_sea_ratio = args.sea_ratio == "yes"
+    sea_only = args.sea_only == "yes"
+    if sea_only:
+        calculate_sea_ratio = True
+        use_sam = False
+    sea_state_path = Path(args.sea_state_file) if args.sea_state_file else None
+    sea_state_snapshot = sea_state_path.read_bytes() if sea_state_path is not None and sea_state_path.exists() else None
     skip_dark_video = args.skip_dark_video == "yes"
+    detect_roi = {
+        "top": args.roi_top,
+        "right": args.roi_right,
+        "bottom": args.roi_bottom,
+        "left": args.roi_left,
+    }
     model_specs = None
     if args.model_specs_file:
         model_specs = json.loads(Path(args.model_specs_file).read_text(encoding="utf-8"))
     model_paths = [Path(path) for path in (args.model or [])]
-    if not model_specs and not model_paths:
+    if not sea_only and not model_specs and not model_paths:
         parser.error("--model or --model-specs-file is required")
-    primary_model = model_paths[0] if model_paths else Path(str(model_specs[0]["path"]))
+    primary_model = (
+        model_paths[0]
+        if model_paths
+        else Path(str(model_specs[0]["path"])) if model_specs else None
+    )
 
-    def on_progress(processed: int, total: int, with_det: int) -> None:
-        _write_progress(progress_file, processed, total, with_det)
+    def on_progress(
+        processed: int,
+        total: int,
+        with_det: int,
+        sea_stats: dict | None = None,
+    ) -> None:
+        _write_progress(progress_file, processed, total, with_det, sea_stats)
 
     events_file = Path(args.events_file) if args.events_file else None
 
@@ -143,6 +184,13 @@ def main(argv: list[str] | None = None) -> int:
                 device=device,
                 use_segmentation=use_segmentation,
                 use_sam=use_sam,
+                calculate_sea_ratio=calculate_sea_ratio,
+                sea_only=sea_only,
+                sea_engine=args.sea_engine,
+                sea_device=args.sea_device,
+                sea_analysis_interval_sec=args.sea_analysis_interval_sec,
+                sea_state_path=sea_state_path,
+                detect_roi_margins=detect_roi,
                 on_progress=on_progress,
                 on_detection=on_detection,
                 should_cancel=should_cancel,
@@ -161,6 +209,13 @@ def main(argv: list[str] | None = None) -> int:
                 device=device,
                 use_segmentation=use_segmentation,
                 use_sam=use_sam,
+                calculate_sea_ratio=calculate_sea_ratio,
+                sea_only=sea_only,
+                sea_engine=args.sea_engine,
+                sea_device=args.sea_device,
+                sea_analysis_interval_sec=args.sea_analysis_interval_sec,
+                sea_state_path=sea_state_path,
+                detect_roi_margins=detect_roi,
                 skip_dark_video=skip_dark_video,
                 on_progress=on_progress,
                 on_detection=on_detection,
@@ -181,6 +236,12 @@ def main(argv: list[str] | None = None) -> int:
                     torch.cuda.empty_cache()
             except Exception:
                 pass
+            if sea_state_path is not None:
+                if sea_state_snapshot is None:
+                    sea_state_path.unlink(missing_ok=True)
+                else:
+                    sea_state_path.parent.mkdir(parents=True, exist_ok=True)
+                    sea_state_path.write_bytes(sea_state_snapshot)
             detect_video(
                 Path(args.video),
                 primary_model,
@@ -192,6 +253,13 @@ def main(argv: list[str] | None = None) -> int:
                 device="cpu",
                 use_segmentation=use_segmentation,
                 use_sam=use_sam,
+                calculate_sea_ratio=calculate_sea_ratio,
+                sea_only=sea_only,
+                sea_engine=args.sea_engine,
+                sea_device=args.sea_device,
+                sea_analysis_interval_sec=args.sea_analysis_interval_sec,
+                sea_state_path=sea_state_path,
+                detect_roi_margins=detect_roi,
                 skip_dark_video=skip_dark_video,
                 on_progress=on_progress,
                 on_detection=on_detection,

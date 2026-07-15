@@ -94,10 +94,12 @@ class DetectBatchTests(unittest.TestCase):
                 dataset_root=root / "dataset",
                 config_dir=config_dir,
             )
-            launched: list[tuple[str, int]] = []
+            launched: list[tuple[str, int, float]] = []
 
             def fake_launch(item):
-                launched.append((item["video_name"], item["batch_index"]))
+                launched.append(
+                    (item["video_name"], item["batch_index"], item["sea_analysis_interval_sec"])
+                )
                 job = DetectJob(
                     job_id="first-job",
                     video_name=item["video_name"],
@@ -116,7 +118,7 @@ class DetectBatchTests(unittest.TestCase):
 
             manager.start_detection_batch(videos, model_path=model_path)
 
-            self.assertEqual(launched, [("first.mp4", 1)])
+            self.assertEqual(launched, [("first.mp4", 1, 5.0)])
             self.assertEqual(
                 [(item["video_name"], item["batch_index"]) for item in manager._detect_queue],
                 [("second.mp4", 2), ("third.mp4", 3)],
@@ -178,6 +180,63 @@ class DetectBatchTests(unittest.TestCase):
             self.assertEqual(state.detect_batch_index, 2)
             self.assertEqual(state.detect_queue_pending, 0)
             self.assertEqual(state.detect_batch_done, 1)
+
+    def test_detection_rejects_sea_interval_over_five_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = DetectPipelineManager(
+                root=root / "pipeline",
+                dataset_root=root / "dataset",
+                config_dir=root / "config",
+            )
+
+            with self.assertRaises(ValueError):
+                manager.start_detection_batch(
+                    [{"video_path": root / "video.mp4", "video_name": "video.mp4"}],
+                    sea_analysis_interval_sec=300.1,
+                )
+
+    def test_sea_only_batch_does_not_require_a_detection_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video_path = root / "video.mp4"
+            video_path.write_bytes(b"video")
+            manager = DetectPipelineManager(
+                root=root / "pipeline",
+                dataset_root=root / "dataset",
+                config_dir=root / "config",
+            )
+            launched: list[dict] = []
+
+            def fake_launch(item):
+                launched.append(item)
+                job = DetectJob(
+                    job_id="sea-only-job",
+                    video_name=item["video_name"],
+                    created_at="2026-07-15T00:00:00+00:00",
+                    status="running",
+                    sea_ratio_enabled=True,
+                    sea_only=True,
+                )
+                manager._save_job(job)
+                return job
+
+            manager._launch_detection = fake_launch  # type: ignore[method-assign]
+
+            manager.start_detection_batch(
+                [{"video_path": video_path, "video_name": video_path.name}],
+                sea_only=True,
+            )
+
+            self.assertEqual(len(launched), 1)
+            self.assertTrue(launched[0]["sea_only"])
+            self.assertTrue(launched[0]["calculate_sea_ratio"])
+            self.assertFalse(launched[0]["use_sam"])
+            self.assertEqual(launched[0]["model_specs"], [])
+            self.assertEqual(launched[0]["model_path"], Path("."))
+            state = manager._load_state()
+            self.assertTrue(state.detect_sea_only)
+            self.assertTrue(state.detect_sea_ratio_enabled)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,91 @@ from brailer_monitor.detect_timeline import (
 
 
 class DetectTimelineTests(unittest.TestCase):
+    def test_manifest_preserves_full_sea_analysis_and_encounter_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            frames = [
+                {
+                    "frame_index": 0,
+                    "timestamp_sec": 0.0,
+                    "detections": [],
+                    "sea_ratio": 0.8,
+                    "sea_quality": "good",
+                    "sea_state": "open_sea",
+                    "sea_confidence": 0.9,
+                    "vessel_ratio": 0.0,
+                    "sea_method": "hybrid-test",
+                },
+                {
+                    "frame_index": 10,
+                    "timestamp_sec": 10.0,
+                    "detections": [],
+                    "sea_ratio": 0.5,
+                    "sea_quality": "good",
+                    "sea_state": "encounter",
+                    "sea_event": "encounter_start",
+                    "sea_confidence": 0.8,
+                    "vessel_ratio": 0.02,
+                    "sea_method": "hybrid-test",
+                },
+                {
+                    "frame_index": 20,
+                    "timestamp_sec": 20.0,
+                    "detections": [],
+                    "sea_ratio": 0.45,
+                    "sea_quality": "good",
+                    "sea_state": "encounter",
+                    "sea_confidence": 0.75,
+                    "vessel_ratio": 0.03,
+                    "sea_method": "hybrid-test",
+                },
+                {
+                    "frame_index": 50,
+                    "timestamp_sec": 50.0,
+                    "detections": [],
+                    "sea_ratio": 0.79,
+                    "sea_quality": "good",
+                    "sea_state": "open_sea",
+                    "sea_event": "departure",
+                    "sea_confidence": 0.88,
+                    "vessel_ratio": 0.0,
+                    "sea_method": "hybrid-test",
+                },
+            ]
+            merge_job_manifest(
+                path,
+                job_id="job-sea",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest={
+                    "sea_ratio_enabled": True,
+                    "sea_only": True,
+                    "object_detection_enabled": False,
+                    "sea_engine": "hybrid",
+                    "sea_analysis_interval_sec": 5.0,
+                    "fps": 1.0,
+                    "total_frames": 60,
+                    "frames_processed": len(frames),
+                    "frames": frames,
+                },
+            )
+
+            result = list_timeline(path)
+            analysis = result["videos"][0]["sea_analysis"]
+
+            self.assertEqual(analysis["sample_count"], 4)
+            self.assertTrue(result["videos"][0]["sea_only"])
+            self.assertFalse(result["videos"][0]["object_detection_enabled"])
+            self.assertEqual(result["videos"][0]["sea_analysis_interval_sec"], 5.0)
+            self.assertEqual(analysis["unknown_count"], 0)
+            self.assertEqual(analysis["methods"], ["hybrid-test"])
+            self.assertEqual(len(analysis["encounter_segments"]), 1)
+            encounter = analysis["encounter_segments"][0]
+            self.assertEqual(encounter["start_time"], "2026-02-01 04:00:10")
+            self.assertEqual(encounter["end_time"], "2026-02-01 04:00:50")
+            self.assertEqual(encounter["duration_sec"], 40.0)
+            self.assertEqual(encounter["min_sea_ratio"], 0.45)
+            self.assertEqual(encounter["max_vessel_ratio"], 0.03)
+
     def test_load_timeline_ignores_stale_trailing_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"
@@ -60,6 +145,9 @@ class DetectTimelineTests(unittest.TestCase):
                         "timestamp_sec": 30.0,
                         "detections": [{"class_name": "brailer", "confidence": 0.9}],
                         "preview_path": "frame_000020.jpg",
+                        "sea_ratio": 0.25,
+                        "sea_percent": 25.0,
+                        "sea_area_px": 100,
                     },
                 ],
             }
@@ -74,6 +162,8 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(result["total"], 1)
             segment = result["segments"][0]
             self.assertEqual(segment["start_absolute_time_label"], "2026-02-01 04:00:30")
+            self.assertEqual(segment["avg_sea_ratio"], 0.25)
+            self.assertEqual(segment["avg_sea_percent"], 25.0)
             self.assertEqual(result["range_start_label"], "2026-02-01 04:00:00")
             self.assertEqual(result["range_end_label"], "2026-02-01 04:00:30")
             video = result["videos"][0]
@@ -407,6 +497,59 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(result["event_count"], 1)
             self.assertEqual(result["removed_by_condition"]["tall_thin_box"], 1)
 
+    def test_postprocess_removes_side_edge_detections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 1.0,
+                "width": 1280,
+                "height": 720,
+                "total_frames": 100,
+                "frame_stride": 5,
+                "frames_processed": 3,
+                "frames_with_detections": 3,
+                "frames": [
+                    {
+                        "frame_index": 10,
+                        "timestamp_sec": 10.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [500, 100, 650, 250]}],
+                        "preview_path": "frame_000010.jpg",
+                    },
+                    {
+                        "frame_index": 15,
+                        "timestamp_sec": 15.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [1125, 155, 1268, 330]}],
+                        "preview_path": "frame_000015.jpg",
+                    },
+                    {
+                        "frame_index": 20,
+                        "timestamp_sec": 20.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [10, 155, 150, 330]}],
+                        "preview_path": "frame_000020.jpg",
+                    },
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_right_edge_detections=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 2)
+            self.assertEqual(result["removed_event_count"], 2)
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(result["removed_by_condition"]["right_edge"], 2)
+            self.assertTrue(result["postprocess"]["remove_right_edge_detections"])
+            self.assertEqual(result["postprocess"]["right_edge_center_x_ratio"], 0.85)
+            self.assertEqual(result["postprocess"]["edge_side_x_ratio"], 0.985)
+
     def test_postprocess_removes_static_three_to_four_second_track(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"
@@ -443,6 +586,91 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(result["removed_event_count"], 4)
             self.assertEqual(result["event_count"], 0)
             self.assertEqual(result["removed_by_condition"]["static_short_track"], 4)
+
+    def test_postprocess_removes_same_position_runs_outside_three_to_four_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            first_run = [75, 80, 90, 95, 110, 115]
+            second_run = [
+                400,
+                405,
+                410,
+                415,
+                420,
+                425,
+                430,
+                435,
+                440,
+                445,
+                460,
+                465,
+                470,
+                530,
+                625,
+                695,
+                720,
+                735,
+                740,
+                805,
+                810,
+                815,
+                830,
+                835,
+                840,
+                845,
+                850,
+                855,
+                860,
+                880,
+                925,
+                1015,
+                1045,
+            ]
+
+            def frame_payload(frame_index: int) -> dict:
+                drift = ((frame_index // 5) % 9) - 4
+                cx = 690 + drift * 2.0
+                return {
+                    "frame_index": frame_index,
+                    "timestamp_sec": round(frame_index / 15.0, 3),
+                    "detections": [
+                        {
+                            "class_name": "brailer",
+                            "confidence": 0.8,
+                            "bbox_xyxy": [cx - 50.0, 570.0, cx + 50.0, 720.0],
+                        }
+                    ],
+                    "preview_path": f"frame_{frame_index:06d}.jpg",
+                }
+
+            frames = [frame_payload(idx) for idx in first_run + second_run]
+            manifest = {
+                "fps": 15.0,
+                "total_frames": 1200,
+                "frame_stride": 5,
+                "frames_processed": len(frames),
+                "frames_with_detections": len(frames),
+                "frames": frames,
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260128_030016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_static_short_tracks=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], len(frames))
+            self.assertEqual(result["removed_event_count"], len(frames))
+            self.assertEqual(result["event_count"], 0)
+            self.assertEqual(result["removed_by_condition"]["static_short_track"], len(frames))
+            self.assertEqual(result["postprocess"]["static_position_min_frames"], 6)
+            self.assertEqual(result["postprocess"]["static_position_max_gap_sec"], 8.0)
 
     def test_postprocess_removes_temporally_isolated_detections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -532,6 +760,84 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(result["removed_by_condition"]["temporal_isolated"], 3)
             self.assertEqual(result["postprocess"]["temporal_short_burst_max_frames"], 3)
             self.assertEqual(result["postprocess"]["temporal_short_burst_max_duration_sec"], 1.0)
+
+    def test_temporal_isolation_preserves_frames_merged_by_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 10.0,
+                "total_frames": 100,
+                "frame_stride": 3,
+                "frames_processed": 3,
+                "frames_with_detections": 3,
+                "frames": [
+                    {
+                        "frame_index": idx,
+                        "timestamp_sec": ts,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [100, 100, 140, 140]}],
+                        "preview_path": f"frame_{idx:06d}.jpg",
+                    }
+                    for idx, ts in ((10, 1.0), (13, 1.3), (16, 1.6))
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                max_gap_sec=8,
+                merge_segments=True,
+                remove_temporal_isolated=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 0)
+            self.assertEqual(result["event_count"], 3)
+            self.assertEqual(result["segment_count"], 1)
+            self.assertEqual(result["postprocess"]["temporal_merge_protect_gap_sec"], 8.0)
+
+    def test_temporal_similarity_ignores_center_distance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            manifest = {
+                "fps": 1.0,
+                "total_frames": 100,
+                "frame_stride": 5,
+                "frames_processed": 2,
+                "frames_with_detections": 2,
+                "frames": [
+                    {
+                        "frame_index": 10,
+                        "timestamp_sec": 10.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [100, 100, 140, 140]}],
+                        "preview_path": "frame_000010.jpg",
+                    },
+                    {
+                        "frame_index": 15,
+                        "timestamp_sec": 15.0,
+                        "detections": [{"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": [700, 350, 740, 390]}],
+                        "preview_path": "frame_000015.jpg",
+                    },
+                ],
+            }
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest=manifest,
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_temporal_isolated=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 0)
+            self.assertEqual(result["event_count"], 2)
 
     def test_postprocess_preserves_temporal_tail_when_detection_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

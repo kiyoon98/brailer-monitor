@@ -43,6 +43,10 @@ class DetectionSegmentReportRow:
     max_mask_width_px: int
     avg_mask_height_px: float
     max_mask_height_px: int
+    best_sea_ratio: float | None
+    avg_sea_ratio: float | None
+    min_sea_ratio: float | None
+    max_sea_ratio: float | None
     video_name: str
     job_id: str
     preview_path: str | None
@@ -64,6 +68,8 @@ class DetectionTimelineFrame:
     job_id: str
     frame_index: int | None
     timestamp_sec: float | None
+    sea_ratio: float | None
+    sea_percent: float | None
     preview_path: str | None
     preview_url: str | None
     is_representative: bool
@@ -83,6 +89,9 @@ class DetectionReport:
     model_details: list[dict[str, str]]
     confidence_summary: str
     confidence_values: list[float]
+    detect_roi_summary: str
+    sea_analysis: dict[str, Any]
+    sea_encounters: list[dict[str, Any]]
     postprocess: dict[str, Any]
     video_count: int
     dark_skip_enabled_video_count: int
@@ -131,6 +140,10 @@ REPORT_FIELDS = [
     "max_mask_width_px",
     "avg_mask_height_px",
     "max_mask_height_px",
+    "best_sea_ratio",
+    "avg_sea_ratio",
+    "min_sea_ratio",
+    "max_sea_ratio",
     "video_name",
     "job_id",
     "preview_path",
@@ -169,6 +182,29 @@ def _positive_numbers(items: list[dict[str, Any]], key: str, *, fallback_key: st
 
 def _avg(values: list[float]) -> float:
     return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def _ratio_value(value: Any) -> float | None:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= ratio <= 1.0:
+        return None
+    return ratio
+
+
+def _ratio_values(items: list[dict[str, Any]], key: str) -> list[float]:
+    values: list[float] = []
+    for item in items:
+        ratio = _ratio_value(item.get(key))
+        if ratio is not None:
+            values.append(ratio)
+    return values
+
+
+def _avg_ratio(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 4) if values else None
 
 
 def _source_summary(videos: list[dict[str, Any]], rows: list[DetectionSegmentReportRow]) -> str:
@@ -252,14 +288,20 @@ def _model_details(videos: list[dict[str, Any]], events: list[dict[str, Any]]) -
     return details
 
 
-def _model_summary(details: list[dict[str, str]]) -> str:
+def _model_summary(details: list[dict[str, str]], videos: list[dict[str, Any]] | None = None) -> str:
     names = [item["name"] for item in details if item.get("name")]
-    return ", ".join(names) if names else "-"
+    if names:
+        return ", ".join(names)
+    if videos and all(bool(video.get("sea_only")) for video in videos):
+        return "객체 탐지 안 함 (바다 영역만 분석)"
+    return "-"
 
 
 def _confidence_values(videos: list[dict[str, Any]]) -> list[float]:
     values: list[float] = []
     for video in videos:
+        if video.get("sea_only"):
+            continue
         try:
             value = float(video.get("confidence"))
         except (TypeError, ValueError):
@@ -273,6 +315,52 @@ def _confidence_summary(values: list[float]) -> str:
     return ", ".join(f"{value:g}" for value in values) if values else "-"
 
 
+def _roi_margin_percent(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 1.0:
+        number *= 100.0
+    return number
+
+
+def _detect_roi_label(roi: Any) -> str | None:
+    if not isinstance(roi, dict):
+        return None
+    label = roi.get("label")
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+    region = roi.get("region_percent")
+    if isinstance(region, dict):
+        try:
+            return (
+                f"x {float(region['x_min']):g}-{float(region['x_max']):g}%, "
+                f"y {float(region['y_min']):g}-{float(region['y_max']):g}%"
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+    margins = roi.get("margins_percent") or roi.get("margins") or roi
+    if not isinstance(margins, dict):
+        return None
+    top = _roi_margin_percent(margins.get("top"))
+    right = _roi_margin_percent(margins.get("right"))
+    bottom = _roi_margin_percent(margins.get("bottom"))
+    left = _roi_margin_percent(margins.get("left"))
+    if None in (top, right, bottom, left):
+        return None
+    return f"x {left:g}-{100.0 - right:g}%, y {top:g}-{100.0 - bottom:g}%"
+
+
+def _detect_roi_summary(videos: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    for video in videos:
+        label = _detect_roi_label(video.get("detect_roi"))
+        if label and label not in labels:
+            labels.append(label)
+    return ", ".join(labels) if labels else "-"
+
+
 def _dark_skipped_video_count(videos: list[dict[str, Any]]) -> int:
     return sum(
         1
@@ -283,6 +371,99 @@ def _dark_skipped_video_count(videos: list[dict[str, Any]]) -> int:
 
 def _dark_skip_enabled_video_count(videos: list[dict[str, Any]]) -> int:
     return sum(1 for video in videos if video.get("dark_skip_enabled"))
+
+
+def _sea_report_summary(videos: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    enabled_videos = [
+        video
+        for video in videos
+        if isinstance(video.get("sea_analysis"), dict) and video["sea_analysis"].get("enabled")
+    ]
+    methods: list[str] = []
+    intervals: list[float] = []
+    state_counts: Counter[str] = Counter()
+    encounters: list[dict[str, Any]] = []
+    sample_count = 0
+    valid_count = 0
+    unknown_count = 0
+    encounter_events = 0
+    departure_events = 0
+    weighted_sea_ratio = 0.0
+    weighted_sea_count = 0
+    weighted_confidence = 0.0
+    weighted_confidence_count = 0
+
+    for video in enabled_videos:
+        analysis = video["sea_analysis"]
+        try:
+            interval = float(video.get("sea_analysis_interval_sec"))
+        except (TypeError, ValueError):
+            interval = 5.0
+        if interval not in intervals:
+            intervals.append(interval)
+        current_samples = int(analysis.get("sample_count") or 0)
+        current_valid = int(analysis.get("valid_count") or 0)
+        sample_count += current_samples
+        valid_count += current_valid
+        unknown_count += int(analysis.get("unknown_count") or 0)
+        state_counts.update(analysis.get("state_counts") or {})
+        for method in analysis.get("methods") or []:
+            method = str(method)
+            if method and method not in methods:
+                methods.append(method)
+        avg_ratio = _ratio_value(analysis.get("avg_sea_ratio"))
+        if avg_ratio is not None and current_valid > 0:
+            weighted_sea_ratio += avg_ratio * current_valid
+            weighted_sea_count += current_valid
+        avg_confidence = _ratio_value(analysis.get("avg_confidence"))
+        if avg_confidence is not None and current_valid > 0:
+            weighted_confidence += avg_confidence * current_valid
+            weighted_confidence_count += current_valid
+        for event in analysis.get("events") or []:
+            if event.get("event") == "encounter_start":
+                encounter_events += 1
+            elif event.get("event") == "departure":
+                departure_events += 1
+        for segment in analysis.get("encounter_segments") or []:
+            encounters.append(
+                {
+                    **dict(segment),
+                    "job_id": str(video.get("job_id") or ""),
+                    "video_name": str(video.get("video_name") or ""),
+                }
+            )
+
+    encounters.sort(
+        key=lambda item: (
+            item.get("start_absolute_time") or "",
+            item.get("video_name") or "",
+            float(item.get("start_timestamp_sec") or 0.0),
+        )
+    )
+    return (
+        {
+            "enabled_video_count": len(enabled_videos),
+            "methods": methods,
+            "interval_sec_values": sorted(intervals),
+            "sample_count": sample_count,
+            "valid_count": valid_count,
+            "unknown_count": unknown_count,
+            "unknown_fraction": round(unknown_count / sample_count, 4) if sample_count else 0.0,
+            "state_counts": dict(state_counts),
+            "avg_sea_ratio": (
+                round(weighted_sea_ratio / weighted_sea_count, 4) if weighted_sea_count else None
+            ),
+            "avg_confidence": (
+                round(weighted_confidence / weighted_confidence_count, 4)
+                if weighted_confidence_count
+                else None
+            ),
+            "encounter_count": len(encounters),
+            "encounter_event_count": encounter_events,
+            "departure_event_count": departure_events,
+        },
+        encounters,
+    )
 
 
 def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
@@ -299,8 +480,10 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         enabled.append("크기 이상 제거")
     if postprocess.get("remove_tall_thin_boxes"):
         enabled.append("세로형 빈 그물 제거")
+    if postprocess.get("remove_right_edge_detections"):
+        enabled.append("좌우 가장자리 제거")
     if postprocess.get("remove_static_short_tracks"):
-        enabled.append("3-4초 정지 제거")
+        enabled.append("같은 위치 정지 제거")
     if postprocess.get("remove_temporal_isolated"):
         enabled.append("시간 고립/짧은 burst 제거")
     if postprocess.get("remove_color_outliers"):
@@ -311,6 +494,7 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         "position_outlier": "위치",
         "size_outlier": "크기",
         "tall_thin_box": "세로형",
+        "right_edge": "좌우가장자리",
         "static_short_track": "정지",
         "temporal_isolated": "시간고립",
         "color_outlier": "색상",
@@ -375,6 +559,7 @@ def build_detection_report(
         mask_areas = _positive_numbers(group, "mask_area_px", fallback_key="area_px")
         mask_widths = _positive_numbers(group, "mask_width_px")
         mask_heights = _positive_numbers(group, "mask_height_px")
+        sea_ratios = _ratio_values(group, "sea_ratio")
         job_id = str(best.get("job_id") or "")
         preview_path = best.get("preview_path")
         preview_url = (
@@ -394,6 +579,7 @@ def build_detection_report(
                 else None
             )
             frame_confidence = float(frame.get("confidence") or 0.0)
+            frame_sea_ratio = _ratio_value(frame.get("sea_ratio"))
             abs_time = frame.get("absolute_time")
             if abs_time and not isinstance(abs_time, str):
                 abs_time = abs_time.isoformat()
@@ -408,6 +594,8 @@ def build_detection_report(
                     job_id=frame_job_id,
                     frame_index=frame.get("frame_index"),
                     timestamp_sec=frame.get("timestamp_sec"),
+                    sea_ratio=round(frame_sea_ratio, 4) if frame_sea_ratio is not None else None,
+                    sea_percent=round(frame_sea_ratio * 100.0, 2) if frame_sea_ratio is not None else None,
                     preview_path=frame_preview_path,
                     preview_url=frame_preview_url,
                     is_representative=frame is best,
@@ -445,6 +633,14 @@ def build_detection_report(
                 max_mask_width_px=int(max(mask_widths, default=0)),
                 avg_mask_height_px=_avg(mask_heights),
                 max_mask_height_px=int(max(mask_heights, default=0)),
+                best_sea_ratio=(
+                    round(_ratio_value(best.get("sea_ratio")), 4)
+                    if _ratio_value(best.get("sea_ratio")) is not None
+                    else None
+                ),
+                avg_sea_ratio=_avg_ratio(sea_ratios),
+                min_sea_ratio=round(min(sea_ratios), 4) if sea_ratios else None,
+                max_sea_ratio=round(max(sea_ratios), 4) if sea_ratios else None,
                 video_name=video_name,
                 job_id=job_id,
                 preview_path=preview_path,
@@ -459,14 +655,18 @@ def build_detection_report(
     classes = Counter(row.class_name for row in rows)
     model_details = _model_details(videos, events)
     confidence_values = _confidence_values(videos)
+    sea_analysis, sea_encounters = _sea_report_summary(videos)
     return DetectionReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
         source_summary=_source_summary(videos, rows),
-        model_summary=_model_summary(model_details),
+        model_summary=_model_summary(model_details, videos),
         model_count=len(model_details),
         model_details=model_details,
         confidence_summary=_confidence_summary(confidence_values),
         confidence_values=confidence_values,
+        detect_roi_summary=_detect_roi_summary(videos),
+        sea_analysis=sea_analysis,
+        sea_encounters=sea_encounters,
         postprocess=dict(timeline.get("postprocess") or {}),
         video_count=len(videos),
         dark_skip_enabled_video_count=_dark_skip_enabled_video_count(videos),
@@ -507,6 +707,61 @@ def _segment_mask_stats_label(row: DetectionSegmentReportRow) -> str:
     )
 
 
+def _format_ratio_percent(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value * 100.0:.1f}%"
+
+
+def _sea_ratio_label(row: DetectionSegmentReportRow) -> str:
+    if row.avg_sea_ratio is None:
+        return "-"
+    parts = [f"avg {_format_ratio_percent(row.avg_sea_ratio)}"]
+    if row.min_sea_ratio is not None and row.max_sea_ratio is not None:
+        parts.append(f"range {_format_ratio_percent(row.min_sea_ratio)}-{_format_ratio_percent(row.max_sea_ratio)}")
+    if row.best_sea_ratio is not None:
+        parts.append(f"대표 {_format_ratio_percent(row.best_sea_ratio)}")
+    return "<br>".join(parts)
+
+
+def _render_sea_analysis(report: DetectionReport) -> str:
+    summary = report.sea_analysis
+    if not int(summary.get("enabled_video_count") or 0):
+        return '<p class="muted">바다 영역 분석을 사용하지 않았습니다.</p>'
+    methods = ", ".join(str(item) for item in summary.get("methods") or []) or "-"
+    intervals = ", ".join(
+        "모든 처리 프레임" if float(value) == 0.0 else f"{float(value):g}초"
+        for value in summary.get("interval_sec_values") or []
+    ) or "-"
+    avg_ratio = _format_ratio_percent(_ratio_value(summary.get("avg_sea_ratio")))
+    confidence = _format_ratio_percent(_ratio_value(summary.get("avg_confidence")))
+    unknown = _format_ratio_percent(_ratio_value(summary.get("unknown_fraction")))
+    rows = []
+    for item in report.sea_encounters:
+        min_sea = _format_ratio_percent(_ratio_value(item.get("min_sea_ratio")))
+        max_vessel = _format_ratio_percent(_ratio_value(item.get("max_vessel_ratio")))
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('start_time') or '-'))}</td>"
+            f"<td>{html.escape(str(item.get('end_time') or '-'))}</td>"
+            f"<td>{float(item.get('duration_sec') or 0.0):.1f}s</td>"
+            f"<td>{int(item.get('sample_count') or 0)}</td>"
+            f"<td>{min_sea}</td>"
+            f"<td>{max_vessel}</td>"
+            f"<td>{html.escape(str(item.get('video_name') or '-'))}</td>"
+            "</tr>"
+        )
+    body = "".join(rows) or '<tr><td colspan="7">확정된 조우 구간이 없습니다.</td></tr>'
+    return (
+        f"<p>분석 영상 {int(summary.get('enabled_video_count') or 0)}개 · "
+        f"샘플 {int(summary.get('sample_count') or 0)}개 · 평균 바다 {avg_ratio} · "
+        f"평균 신뢰도 {confidence} · 판정 불가 {unknown} · 엔진 {html.escape(methods)}</p>"
+        f"<p>바다 분석 간격: {html.escape(intervals)}</p>"
+        '<table><thead><tr><th>조우 시작</th><th>이탈/종료</th><th>시간</th><th>샘플</th>'
+        f'<th>최소 바다</th><th>최대 선박</th><th>영상</th></tr></thead><tbody>{body}</tbody></table>'
+    )
+
+
 def _link_or_text(label: str, href: str | None) -> str:
     escaped_label = html.escape(label or "-")
     if not href:
@@ -515,10 +770,13 @@ def _link_or_text(label: str, href: str | None) -> str:
 
 
 def _preview_title(row: DetectionSegmentReportRow) -> str:
+    sea = ""
+    if row.best_sea_ratio is not None:
+        sea = f" · 바다 {_format_ratio_percent(row.best_sea_ratio)}"
     return (
         f"{row.class_name} · {row.best_match_pct:.2f}% · "
         f"연속구간 프레임 {row.best_segment_frame_number}/{row.frame_count} · "
-        f"{row.start_time} - {row.end_time} · {row.video_name}"
+        f"{row.start_time} - {row.end_time}{sea} · {row.video_name}"
     )
 
 
@@ -613,10 +871,13 @@ def _render_timeline_overview(report: DetectionReport, preview_indices: dict[Pre
     frame_markers: list[str] = []
     for frame, event_time in frame_entries:
         left = max(0.0, min(100.0, ((event_time - range_start).total_seconds() / total_sec) * 100.0))
+        sea_label = ""
+        if frame.sea_ratio is not None:
+            sea_label = f" · 바다 {_format_ratio_percent(frame.sea_ratio)}"
         title = (
             f"{frame.class_name} · {frame.match_pct:.2f}% · "
             f"연속구간 프레임 {frame.segment_frame_number}/{frame.segment_frame_count} · "
-            f"{frame.time} · {frame.video_name}"
+            f"{frame.time}{sea_label} · {frame.video_name}"
         )
         preview_index = preview_indices.get(_frame_preview_key(frame))
         index_attr = f' data-preview-index="{preview_index}"' if preview_index is not None else ""
@@ -941,6 +1202,7 @@ def _render_table_rows(
             f"<td>{html.escape(_bbox_label(row))}</td>"
             f"<td>{html.escape(_mask_label(row))}</td>"
             f"<td>{_segment_mask_stats_label(row)}</td>"
+            f"<td>{_sea_ratio_label(row)}</td>"
             f"<td>{_link_or_text(row.video_name, row.video_url)}</td>"
             "</tr>"
         )
@@ -1027,35 +1289,40 @@ def render_detection_report_html(report: DetectionReport) -> str:
     <div class="card"><div class="value">{report.dark_skipped_video_count}</div><div>어두워 건너뜀</div></div>
     <div class="card"><div class="value">{report.detection_frame_count}</div><div>탐지 프레임</div></div>
     <div class="card"><div class="value">{report.segment_count}</div><div>연속 탐지 구간</div></div>
+    <div class="card"><div class="value">{len(report.sea_encounters)}</div><div>조우 구간</div></div>
     <div class="card"><div class="value">{report.duration_max_sec:.3f}s</div><div>최장 연속 시간</div></div>
   </div>
   <p>소스: {html.escape(report.source_summary)}</p>
   <p>사용 모델: {html.escape(report.model_summary)}</p>
   <p>Confidence ratio: {html.escape(report.confidence_summary)}</p>
+  <p>탐지 영역: {html.escape(report.detect_roi_summary)}</p>
   {_postprocess_summary_html(report.postprocess)}
   <p>어두운 영상 건너뛰기: 전체 {report.video_count}개 중 {report.dark_skipped_video_count}개 건너뜀 · 검사 적용 {report.dark_skip_enabled_video_count}개</p>
   <p>클래스별 구간 수: {class_counts or "-"}</p>
   <p>평균 연속 시간: {report.duration_avg_sec:.3f}s · 최소: {report.duration_min_sec:.3f}s · 최대: {report.duration_max_sec:.3f}s</p>
   <p class="muted">대표 프레임 링크는 bbox와 mask가 표시된 preview 이미지를 엽니다. 영상 링크는 해당 탐지 job의 원본 영상을 엽니다.</p>
 
+  <h2>바다 영역 및 조우 분석</h2>
+  {_render_sea_analysis(report)}
+
   <h2>전체 타임라인</h2>
   {timeline_overview}
 
   <h2>연속 시간이 긴 대표 구간</h2>
   <table>
-    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>영상</th></tr></thead>
+    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>바다 비율</th><th>영상</th></tr></thead>
     <tbody>{_render_table_rows(top_duration, preview_indices)}</tbody>
   </table>
 
   <h2>일치율이 높은 대표 구간</h2>
   <table>
-    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>영상</th></tr></thead>
+    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>바다 비율</th><th>영상</th></tr></thead>
     <tbody>{_render_table_rows(top_confidence, preview_indices)}</tbody>
   </table>
 
   <h2>전체 연속 탐지 구간</h2>
   <table>
-    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>영상</th></tr></thead>
+    <thead><tr><th>구간</th><th>연속 시간</th><th>샘플 창</th><th>프레임</th><th>클래스</th><th>최고 일치율</th><th>대표 프레임</th><th>bbox</th><th>대표 mask</th><th>구간 mask 통계</th><th>바다 비율</th><th>영상</th></tr></thead>
     <tbody>{_render_table_rows(report.rows, preview_indices)}</tbody>
   </table>
   {preview_modal}

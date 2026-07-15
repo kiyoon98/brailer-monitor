@@ -52,6 +52,13 @@ const els = {
   confidence: document.getElementById("confidence"),
   detectImgsz: document.getElementById("detectImgsz"),
   useSam: document.getElementById("useSam"),
+  calculateSeaRatio: document.getElementById("calculateSeaRatio"),
+  seaOnly: document.getElementById("seaOnly"),
+  seaAnalysisInterval: document.getElementById("seaAnalysisInterval"),
+  detectRoiTop: document.getElementById("detectRoiTop"),
+  detectRoiRight: document.getElementById("detectRoiRight"),
+  detectRoiBottom: document.getElementById("detectRoiBottom"),
+  detectRoiLeft: document.getElementById("detectRoiLeft"),
   skipDarkVideo: document.getElementById("skipDarkVideo"),
   detectBtn: document.getElementById("detectBtn"),
   stopDetectBtn: document.getElementById("stopDetectBtn"),
@@ -65,6 +72,7 @@ const els = {
   postRemovePositionOutliers: document.getElementById("postRemovePositionOutliers"),
   postRemoveSizeOutliers: document.getElementById("postRemoveSizeOutliers"),
   postRemoveTallThinBoxes: document.getElementById("postRemoveTallThinBoxes"),
+  postRemoveRightEdge: document.getElementById("postRemoveRightEdge"),
   postRemoveStaticShortTracks: document.getElementById("postRemoveStaticShortTracks"),
   postRemoveTemporalIsolated: document.getElementById("postRemoveTemporalIsolated"),
   postRemoveColorOutliers: document.getElementById("postRemoveColorOutliers"),
@@ -79,6 +87,13 @@ const els = {
   detectProgressWrap: document.getElementById("detectProgressWrap"),
   detectProgressBar: document.getElementById("detectProgressBar"),
   detectProgressText: document.getElementById("detectProgressText"),
+  seaScaleWrap: document.getElementById("seaScaleWrap"),
+  seaScaleFill: document.getElementById("seaScaleFill"),
+  seaScaleMarker: document.getElementById("seaScaleMarker"),
+  seaScaleValue: document.getElementById("seaScaleValue"),
+  seaStateValue: document.getElementById("seaStateValue"),
+  seaConfidenceValue: document.getElementById("seaConfidenceValue"),
+  seaVesselValue: document.getElementById("seaVesselValue"),
   frameResults: document.getElementById("frameResults"),
   frameCount: document.getElementById("frameCount"),
   timelineAxis: document.getElementById("timelineAxis"),
@@ -451,6 +466,7 @@ function showDetectProgressFromState(state) {
   if (!state || (state.detect_status !== "running" && state.detect_status !== "cancelling")) {
     return false;
   }
+  updateSeaScale(state, { active: true });
   const processed = state.detect_processed_frames || 0;
   const total = state.detect_total_frames || 0;
   const withObjects = state.detect_frames_with_objects || 0;
@@ -528,13 +544,30 @@ function getDetectSourceMode() {
   return "upload";
 }
 
+function readDetectRoi() {
+  const readMargin = (input) => {
+    const value = Number(input?.value ?? 15);
+    if (!Number.isFinite(value)) return 0.15;
+    return Math.max(0, Math.min(49, value)) / 100;
+  };
+  return {
+    top: readMargin(els.detectRoiTop),
+    right: readMargin(els.detectRoiRight),
+    bottom: readMargin(els.detectRoiBottom),
+    left: readMargin(els.detectRoiLeft),
+  };
+}
+
 function setDetectSourceMode(mode) {
   detectSourceMode = mode === "lake" || mode === "stream" ? mode : "upload";
   els.detectUploadSection?.classList.toggle("hidden", detectSourceMode !== "upload");
   els.detectLakeSection?.classList.toggle("hidden", detectSourceMode !== "lake");
   els.detectStreamSection?.classList.toggle("hidden", detectSourceMode !== "stream");
   if (els.detectBtn) {
-    els.detectBtn.textContent = detectSourceMode === "stream" ? "스트림 탐지 시작" : "탐지 시작";
+    const seaOnly = !!els.seaOnly?.checked;
+    els.detectBtn.textContent = seaOnly
+      ? detectSourceMode === "stream" ? "스트림 바다 분석 시작" : "바다 분석 시작"
+      : detectSourceMode === "stream" ? "스트림 탐지 시작" : "탐지 시작";
   }
   if (els.stopDetectBtn) {
     els.stopDetectBtn.textContent = detectSourceMode === "stream" ? "스트림 탐지 종료" : "탐지 중지";
@@ -911,7 +944,8 @@ function hasUsableModel(state = lastPipelineState) {
 }
 
 function updateDetectButtonState() {
-  const modelReady = hasUsableModel();
+  const seaOnly = !!els.seaOnly?.checked;
+  const modelReady = seaOnly || hasUsableModel();
   const detectActive = isDetectBusy();
   if (!modelReady) {
     els.detectBtn.disabled = true;
@@ -924,7 +958,7 @@ function updateDetectButtonState() {
     }
     return;
   }
-  if (!selectedDetectionModelIds().length && !detectActive) {
+  if (!seaOnly && !selectedDetectionModelIds().length && !detectActive) {
     els.detectBtn.disabled = true;
     if (els.detectStatus) {
       setStatus(els.detectStatus, "탐지에 사용할 모델을 하나 이상 선택하세요.");
@@ -1042,7 +1076,12 @@ async function discoverLakeVideos() {
   }
 }
 
-function beginDetectSession(batchTotal, queuePending = Math.max(0, batchTotal - 1)) {
+function beginDetectSession(
+  batchTotal,
+  queuePending = Math.max(0, batchTotal - 1),
+  seaRatioEnabled = false,
+  seaOnly = false,
+) {
   clearStreamDetectionOverlay();
   currentLoadedResultId = null;
   detectSession += 1;
@@ -1062,6 +1101,10 @@ function beginDetectSession(batchTotal, queuePending = Math.max(0, batchTotal - 
     detect_total_frames: 0,
     detect_frames_with_objects: 0,
     detect_progress_pct: 0,
+    detect_last_sea_ratio: null,
+    detect_last_sea_percent: null,
+    detect_sea_ratio_enabled: !!seaRatioEnabled,
+    detect_sea_only: !!seaOnly,
     detect_overlay_job_id: null,
     detect_overlay_preview_path: null,
     detect_overlay_frame_index: null,
@@ -1073,6 +1116,8 @@ function beginDetectSession(batchTotal, queuePending = Math.max(0, batchTotal - 
     detect_error: null,
   };
   setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
+  if (seaRatioEnabled) setSeaScalePercent(null, { active: true });
+  else clearSeaScale();
   setStatus(els.detectStatus, "탐지 준비 중...");
   updateStopButtons(lastPipelineState);
   startPolling();
@@ -1121,6 +1166,8 @@ async function finishDetectStart(result, batchTotal) {
     );
   } else if ((result.queue_pending || 0) > 0) {
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
+    if (seaRatioEnabled(s)) setSeaScalePercent(null, { active: true });
+    else clearSeaScale();
     setStatus(els.detectStatus, `대기열 ${result.queue_pending}개 · 첫 비디오 시작 중...`);
   } else {
     showDetectProgressFromState(s);
@@ -1150,6 +1197,82 @@ function setProgress(wrap, bar, textEl, pct, text) {
   textEl.textContent = text;
 }
 
+function setSeaScalePercent(percent, { active = false } = {}) {
+  if (!els.seaScaleWrap || !els.seaScaleFill || !els.seaScaleMarker || !els.seaScaleValue) return;
+  if (percent == null || !Number.isFinite(percent)) {
+    if (!active) {
+      els.seaScaleWrap.classList.add("hidden");
+    } else {
+      els.seaScaleWrap.classList.remove("hidden");
+      els.seaScaleWrap.classList.add("pending");
+    }
+    els.seaScaleFill.style.width = "0%";
+    els.seaScaleMarker.style.left = "0%";
+    els.seaScaleValue.textContent = "--";
+    els.seaScaleWrap.setAttribute("aria-label", "현재 프레임 바다 영역 값 없음");
+    return;
+  }
+  const clamped = Math.max(0, Math.min(100, percent));
+  const label = `${clamped.toFixed(clamped > 0 && clamped < 10 ? 1 : 0)}%`;
+  els.seaScaleWrap.classList.remove("hidden", "pending");
+  els.seaScaleFill.style.width = `${clamped}%`;
+  els.seaScaleMarker.style.left = `${clamped}%`;
+  els.seaScaleValue.textContent = label;
+  els.seaScaleWrap.setAttribute("aria-label", `현재 프레임 바다 영역 ${label}`);
+}
+
+function updateSeaScale(item, { active = false } = {}) {
+  if (!seaRatioEnabled(item)) {
+    clearSeaScale();
+    return;
+  }
+  setSeaScalePercent(seaPercentFromItem(item), { active });
+  updateSeaAnalysisMeta(item);
+}
+
+function clearSeaScale() {
+  setSeaScalePercent(null, { active: false });
+  updateSeaAnalysisMeta(null);
+}
+
+function updateSeaAnalysisMeta(item) {
+  const state = item?.detect_sea_state ?? item?.sea_state ?? null;
+  const stateLabels = {
+    calibrating: "보정 중",
+    open_sea: "열린 바다",
+    encounter: "조우",
+    unknown: "판정 불가",
+  };
+  const event = item?.detect_sea_event ?? item?.sea_event ?? null;
+  const eventLabels = { encounter_start: "조우 시작", departure: "이탈" };
+  if (els.seaStateValue) {
+    const base = stateLabels[state] || "보정 대기";
+    els.seaStateValue.textContent = eventLabels[event] ? `${base} · ${eventLabels[event]}` : base;
+  }
+  const confidenceRaw = item?.detect_last_sea_confidence ?? item?.last_sea_confidence ?? item?.sea_confidence;
+  const confidence = confidenceRaw == null ? null : Number(confidenceRaw);
+  if (els.seaConfidenceValue) {
+    els.seaConfidenceValue.textContent = Number.isFinite(confidence)
+      ? `신뢰도 ${(confidence * 100).toFixed(0)}%`
+      : "신뢰도 --";
+  }
+  const vesselRaw = item?.detect_last_vessel_ratio ?? item?.last_vessel_ratio ?? item?.vessel_ratio;
+  const vessel = vesselRaw == null ? null : Number(vesselRaw);
+  const increaseRaw = item?.detect_last_vessel_increase_ratio
+    ?? item?.last_vessel_increase_ratio
+    ?? item?.vessel_increase_ratio;
+  const increase = increaseRaw == null ? null : Number(increaseRaw);
+  if (els.seaVesselValue) {
+    if (Number.isFinite(vessel) && Number.isFinite(increase)) {
+      els.seaVesselValue.textContent = `선박 ${(vessel * 100).toFixed(1)}% · 기준 대비 +${(increase * 100).toFixed(2)}%`;
+    } else {
+      els.seaVesselValue.textContent = Number.isFinite(vessel)
+        ? `선박 ${(vessel * 100).toFixed(vessel * 100 < 1 ? 2 : 1)}%`
+        : "선박 --";
+    }
+  }
+}
+
 function detectBatchSuffix(state) {
   const parts = [];
   if (state?.detect_batch_total > 1) {
@@ -1166,11 +1289,17 @@ function detectBatchSuffix(state) {
 }
 
 function detectProgressText(processed, total, withObjects, pct, state) {
+  if (state?.detect_sea_only) {
+    if (total <= 0) {
+      return `스트림 바다 분석 중 · ${processed}프레임 처리${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
+    }
+    return `바다 분석 중 ${processed}/${total} 프레임 (${Math.round(pct * 100)}%)${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
+  }
   if (total <= 0) {
-    return `스트림 탐지 중 · ${processed}프레임 처리 · 객체 ${withObjects}개${detectBatchSuffix(state)}`;
+    return `스트림 탐지 중 · ${processed}프레임 처리 · 객체 ${withObjects}개${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
   }
   const totalLabel = total > 0 ? total : "?";
-  return `탐지 중 ${processed}/${totalLabel} 프레임 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)${detectBatchSuffix(state)}`;
+  return `탐지 중 ${processed}/${totalLabel} 프레임 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
 }
 
 function detectPreparingMessage(state) {
@@ -1180,7 +1309,7 @@ function detectPreparingMessage(state) {
   if (state?.detect_error && state.detect_status === "running") {
     return `${state.detect_error}${detectBatchSuffix(state)}`;
   }
-  return `영상 준비 중${detectBatchSuffix(state)}`;
+  return `${state?.detect_sea_only ? "바다 분석" : "영상"} 준비 중${detectBatchSuffix(state)}`;
 }
 
 function detectStatusDetail(processed, total, withObjects, pct, state) {
@@ -1190,8 +1319,17 @@ function detectStatusDetail(processed, total, withObjects, pct, state) {
   if (processed === 0 && total <= 0) {
     return detectPreparingMessage(state);
   }
+  if (state?.detect_sea_only) {
+    if (total <= 0) {
+      return `스트림 바다 분석 진행 중 · ${processed}프레임 처리${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
+    }
+    if (processed === 0) {
+      return `바다 분석 모델 로딩 중 · ${total}프레임 예정${detectBatchSuffix(state)}`;
+    }
+    return `바다 분석 진행 중 · ${Math.round(pct * 100)}%${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
+  }
   if (total <= 0) {
-    return `스트림 탐지 진행 중 · ${processed}프레임 처리 · 객체 ${withObjects}개${detectBatchSuffix(state)}`;
+    return `스트림 탐지 진행 중 · ${processed}프레임 처리 · 객체 ${withObjects}개${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
   }
   if (processed === 0 && total > 0) {
     if (state?.detect_error && state.detect_status === "running") {
@@ -1199,7 +1337,7 @@ function detectStatusDetail(processed, total, withObjects, pct, state) {
     }
     return `모델 로딩 중 · ${total}프레임 예정${detectBatchSuffix(state)}`;
   }
-  return `탐지 진행 중 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)${detectBatchSuffix(state)}`;
+  return `탐지 진행 중 · 객체 ${withObjects}개 (${Math.round(pct * 100)}%)${detectSeaSuffix(state)}${detectBatchSuffix(state)}`;
 }
 
 function shapeSummary(obj) {
@@ -1353,6 +1491,7 @@ async function previewCvatFile(file) {
 }
 
 function showDetectProgress(processed, total, withObjects, pct, state = lastPipelineState) {
+  updateSeaScale(state, { active: true });
   if (processed === 0 && total <= 0) {
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
     setStatus(els.detectStatus, detectPreparingMessage(state));
@@ -1375,17 +1514,24 @@ function showDetectComplete(job, state = lastPipelineState) {
       ? ` (${state.detect_batch_done}/${state.detect_batch_total} 비디오)`
       : "";
   const timelineCount = state?.detect_timeline_events ?? job.frames_with_detections;
+  const sea = detectSeaSuffix(job) || detectSeaSuffix(state);
+  const seaOnly = !!(job?.sea_only || state?.detect_sea_only);
+  updateSeaScale(job?.last_sea_percent != null || job?.last_sea_ratio != null ? job : state, { active: false });
   setProgress(
     els.detectProgressWrap,
     els.detectProgressBar,
     els.detectProgressText,
     1,
-    `완료: ${job.processed_frames}프레임 · 객체 ${job.frames_with_detections}프레임${batch}`,
+    seaOnly
+      ? `바다 분석 완료: ${job.processed_frames}프레임${sea}${batch}`
+      : `완료: ${job.processed_frames}프레임 · 객체 ${job.frames_with_detections}프레임${sea}${batch}`,
   );
   const failNote = state?.detect_error ? ` · ${state.detect_error}` : "";
   setStatus(
     els.detectStatus,
-    `탐지 완료: 누적 ${timelineCount}건 · 마지막 ${job.video_name}${failNote}`,
+    seaOnly
+      ? `바다 분석 완료 · 마지막 ${job.video_name}${failNote}`
+      : `탐지 완료: 누적 ${timelineCount}건 · 마지막 ${job.video_name}${failNote}`,
     "ok",
   );
   els.detectBtn.disabled = false;
@@ -1532,6 +1678,8 @@ function renderPipelineState(state) {
     showDetectProgressFromState(state);
   } else if (detectSessionActive && !isDetectLive(state)) {
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, 0, "준비 중...");
+    if (seaRatioEnabled(state)) setSeaScalePercent(null, { active: true });
+    else clearSeaScale();
     setStatus(els.detectStatus, "비디오 업로드·탐지 준비 중...");
     els.detectBtn.disabled = true;
   } else if (state.detect_status === "completed" && !isDetectLive(state) && !detectSessionActive) {
@@ -1544,12 +1692,17 @@ function renderPipelineState(state) {
       els.detectProgressBar,
       els.detectProgressText,
       1,
-      `탐지 완료 · ${state.detect_processed_frames || 0}프레임 · 객체 ${state.detect_frames_with_objects || 0}개${batch}`,
+      state.detect_sea_only
+        ? `바다 분석 완료 · ${state.detect_processed_frames || 0}프레임${detectSeaSuffix(state)}${batch}`
+        : `탐지 완료 · ${state.detect_processed_frames || 0}프레임 · 객체 ${state.detect_frames_with_objects || 0}개${detectSeaSuffix(state)}${batch}`,
     );
+    updateSeaScale(state, { active: false });
     const failNote = state.detect_error ? ` · ${state.detect_error}` : "";
     setStatus(
       els.detectStatus,
-      `탐지 완료 · 누적 ${state.detect_timeline_events || 0}건${failNote}`,
+      state.detect_sea_only
+        ? `바다 분석 완료${failNote}`
+        : `탐지 완료 · 누적 ${state.detect_timeline_events || 0}건${failNote}`,
       "ok",
     );
     els.detectBtn.disabled = false;
@@ -1560,6 +1713,7 @@ function renderPipelineState(state) {
     activeDetectJobId = null;
     endDetectSession();
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+    clearSeaScale();
     setStatus(els.detectStatus, state.detect_error || "탐지 실패", "error");
     els.detectBtn.disabled = false;
     detectStopRequested = false;
@@ -1568,6 +1722,7 @@ function renderPipelineState(state) {
     activeDetectJobId = null;
     endDetectSession();
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+    clearSeaScale();
     setStatus(els.detectStatus, state.detect_error || "탐지가 중지되었습니다.", "error");
     detectStopRequested = false;
     updateDetectButtonState();
@@ -1581,6 +1736,39 @@ function renderPipelineState(state) {
 function formatConfidence(confidence) {
   if (confidence == null || Number.isNaN(confidence)) return "-";
   return `${(confidence * 100).toFixed(0)}%`;
+}
+
+function seaPercentFromItem(item) {
+  const directPercent = Number(
+    item?.detect_last_sea_percent ?? item?.last_sea_percent ?? item?.avg_sea_percent ?? item?.sea_percent,
+  );
+  if (Number.isFinite(directPercent)) return directPercent;
+  const ratio = Number(
+    item?.detect_last_sea_ratio ?? item?.last_sea_ratio ?? item?.avg_sea_ratio ?? item?.sea_ratio,
+  );
+  if (Number.isFinite(ratio)) return ratio * 100;
+  return null;
+}
+
+function seaRatioEnabled(item = lastPipelineState) {
+  if (item && Object.prototype.hasOwnProperty.call(item, "detect_sea_ratio_enabled")) {
+    return !!item.detect_sea_ratio_enabled;
+  }
+  if (item && Object.prototype.hasOwnProperty.call(item, "sea_ratio_enabled")) {
+    return !!item.sea_ratio_enabled;
+  }
+  return !!els.calculateSeaRatio?.checked;
+}
+
+function formatSeaRatio(item) {
+  const percent = seaPercentFromItem(item);
+  if (percent == null) return "-";
+  return `${percent.toFixed(percent < 10 ? 1 : 0)}%`;
+}
+
+function detectSeaSuffix(item) {
+  const label = formatSeaRatio(item);
+  return label === "-" ? "" : ` · 바다 ${label}`;
 }
 
 function bboxAreaPx(bbox) {
@@ -1621,6 +1809,10 @@ function formatSegmentStats(segmentOrFrame) {
   }
   if (Number.isFinite(polygonPoints) && polygonPoints > 0) {
     parts.push(`polygon ${polygonPoints}점`);
+  }
+  const seaRatio = formatSeaRatio(segmentOrFrame);
+  if (seaRatio !== "-") {
+    parts.push(`바다 ${seaRatio}`);
   }
   return parts.join(" · ");
 }
@@ -2148,6 +2340,7 @@ async function compactTimeline() {
       remove_position_outliers: !!els.postRemovePositionOutliers?.checked,
       remove_size_outliers: !!els.postRemoveSizeOutliers?.checked,
       remove_tall_thin_boxes: !!els.postRemoveTallThinBoxes?.checked,
+      remove_right_edge_detections: !!els.postRemoveRightEdge?.checked,
       remove_static_short_tracks: !!els.postRemoveStaticShortTracks?.checked,
       remove_temporal_isolated: !!els.postRemoveTemporalIsolated?.checked,
       remove_color_outliers: !!els.postRemoveColorOutliers?.checked,
@@ -2408,6 +2601,7 @@ async function updateDetectUI(jobId) {
       detectStopRequested = false;
       endDetectSession();
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+      clearSeaScale();
       setStatus(els.detectStatus, job.error || "탐지가 중지되었습니다.", "error");
       updateDetectButtonState();
       return "done";
@@ -2437,8 +2631,10 @@ async function updateDetectUI(jobId) {
         const currentVideo = fresh.detect_video_name ? ` · 현재 ${fresh.detect_video_name}` : "";
         setStatus(
           els.detectStatus,
-          `비디오 완료: ${job.video_name} · 다음 파일 처리 중...${currentVideo}`,
-        );
+        `비디오 완료: ${job.video_name} · 다음 파일 처리 중...${currentVideo}`,
+      );
+        if (seaRatioEnabled(fresh)) setSeaScalePercent(null, { active: true });
+        else clearSeaScale();
         activeDetectJobId = fresh.detect_job_id || null;
         return "running";
       }
@@ -2464,6 +2660,7 @@ async function updateDetectUI(jobId) {
       endDetectSession();
       setStatus(els.detectStatus, job.error || "탐지 실패", "error");
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+      clearSeaScale();
       els.detectBtn.disabled = false;
       updateDetectButtonState();
       return "done";
@@ -2938,15 +3135,66 @@ els.streamPreview?.addEventListener("playing", () => {
   }
 });
 
+function readSeaAnalysisInterval() {
+  const value = Number(els.seaAnalysisInterval?.value ?? 5);
+  const normalized = Number.isFinite(value) ? Math.max(0, Math.min(300, value)) : 5;
+  if (els.seaAnalysisInterval) els.seaAnalysisInterval.value = String(normalized);
+  return normalized;
+}
+
+function updateSeaAnalysisIntervalState() {
+  if (els.seaAnalysisInterval) {
+    els.seaAnalysisInterval.disabled = !els.calculateSeaRatio?.checked;
+  }
+}
+
+let calculateSeaRatioBeforeSeaOnly = !!els.calculateSeaRatio?.checked;
+
+function updateSeaOnlyState({ restoreSeaRatio = false } = {}) {
+  const seaOnly = !!els.seaOnly?.checked;
+  if (seaOnly) {
+    calculateSeaRatioBeforeSeaOnly = !!els.calculateSeaRatio?.checked;
+    if (els.calculateSeaRatio) els.calculateSeaRatio.checked = true;
+  } else if (restoreSeaRatio && els.calculateSeaRatio) {
+    els.calculateSeaRatio.checked = calculateSeaRatioBeforeSeaOnly;
+  }
+  if (els.calculateSeaRatio) els.calculateSeaRatio.disabled = seaOnly;
+  for (const input of [
+    els.confidence,
+    els.detectImgsz,
+    els.useSam,
+    els.detectRoiTop,
+    els.detectRoiRight,
+    els.detectRoiBottom,
+    els.detectRoiLeft,
+  ]) {
+    if (input) input.disabled = seaOnly;
+  }
+  updateSeaAnalysisIntervalState();
+  setDetectSourceMode(getDetectSourceMode());
+}
+
+els.calculateSeaRatio?.addEventListener("change", () => {
+  calculateSeaRatioBeforeSeaOnly = !!els.calculateSeaRatio?.checked;
+  updateSeaAnalysisIntervalState();
+});
+els.seaOnly?.addEventListener("change", () => updateSeaOnlyState({ restoreSeaRatio: true }));
+els.seaAnalysisInterval?.addEventListener("change", readSeaAnalysisInterval);
+updateSeaOnlyState();
+
 els.detectBtn.addEventListener("click", async () => {
   detectSourceMode = getDetectSourceMode();
   els.detectBtn.disabled = true;
+  const seaOnly = !!els.seaOnly?.checked;
   const modelIds = selectedDetectionModelIds();
-  if (!modelIds.length) {
+  if (!seaOnly && !modelIds.length) {
     alert("탐지에 사용할 모델을 하나 이상 선택하세요.");
     updateDetectButtonState();
     return;
   }
+  const detectRoi = readDetectRoi();
+  const calculateSeaRatio = !!els.calculateSeaRatio?.checked;
+  const seaAnalysisInterval = readSeaAnalysisInterval();
 
   if (detectSourceMode === "lake") {
     if (lakeVideosReady <= 0) {
@@ -2958,7 +3206,7 @@ els.detectBtn.addEventListener("click", async () => {
     }
     const range = readLakeRange();
     const batchTotal = lakeVideosReady;
-    beginDetectSession(batchTotal);
+    beginDetectSession(batchTotal, Math.max(0, batchTotal - 1), calculateSeaRatio, seaOnly);
     setStatus(els.detectStatus, `영상 다운로드·탐지 준비 중... (${batchTotal}개)`);
     try {
       const result = await api("/api/pipeline/detect/lake", {
@@ -2970,9 +3218,13 @@ els.detectBtn.addEventListener("click", async () => {
           confidence: Number(els.confidence.value),
           imgsz: Number(els.detectImgsz?.value || 416),
           use_sam: !!els.useSam?.checked,
+          calculate_sea_ratio: calculateSeaRatio,
+          sea_only: seaOnly,
+          sea_analysis_interval_sec: seaAnalysisInterval,
+          detect_roi: detectRoi,
           skip_dark_video: !!els.skipDarkVideo?.checked,
           check_exists: true,
-          model_ids: modelIds,
+          model_ids: seaOnly ? [] : modelIds,
         }),
       });
       await finishDetectStart(result, batchTotal);
@@ -2981,6 +3233,7 @@ els.detectBtn.addEventListener("click", async () => {
       endDetectSession();
       stopPolling();
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+      clearSeaScale();
       setStatus(els.detectStatus, err.message, "error");
       updateDetectButtonState();
     }
@@ -2995,7 +3248,7 @@ els.detectBtn.addEventListener("click", async () => {
       return;
     }
     updateStreamPreview();
-    beginDetectSession(1, 0);
+    beginDetectSession(1, 0, calculateSeaRatio, seaOnly);
     setStatus(els.detectStatus, "실시간 스트림 탐지 시작 중...");
     try {
       const result = await api("/api/pipeline/detect/stream", {
@@ -3007,7 +3260,11 @@ els.detectBtn.addEventListener("click", async () => {
           confidence: Number(els.confidence.value),
           imgsz: Number(els.detectImgsz?.value || 416),
           use_sam: !!els.useSam?.checked,
-          model_ids: modelIds,
+          calculate_sea_ratio: calculateSeaRatio,
+          sea_only: seaOnly,
+          sea_analysis_interval_sec: seaAnalysisInterval,
+          detect_roi: detectRoi,
+          model_ids: seaOnly ? [] : modelIds,
         }),
       });
       await finishDetectStart(result, 1);
@@ -3016,6 +3273,7 @@ els.detectBtn.addEventListener("click", async () => {
       endDetectSession();
       stopPolling();
       setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+      clearSeaScale();
       setStatus(els.detectStatus, err.message, "error");
       updateDetectButtonState();
     }
@@ -3036,11 +3294,18 @@ els.detectBtn.addEventListener("click", async () => {
   form.append("confidence", els.confidence.value);
   form.append("imgsz", els.detectImgsz?.value || "416");
   form.append("use_sam", els.useSam?.checked ? "true" : "false");
+  form.append("calculate_sea_ratio", calculateSeaRatio ? "true" : "false");
+  form.append("sea_only", seaOnly ? "true" : "false");
+  form.append("sea_analysis_interval_sec", String(seaAnalysisInterval));
+  form.append("detect_roi_top", String(detectRoi.top));
+  form.append("detect_roi_right", String(detectRoi.right));
+  form.append("detect_roi_bottom", String(detectRoi.bottom));
+  form.append("detect_roi_left", String(detectRoi.left));
   form.append("skip_dark_video", els.skipDarkVideo?.checked ? "true" : "false");
-  for (const modelId of modelIds) {
+  for (const modelId of seaOnly ? [] : modelIds) {
     form.append("model_ids", modelId);
   }
-  beginDetectSession(files.length);
+  beginDetectSession(files.length, Math.max(0, files.length - 1), calculateSeaRatio, seaOnly);
   setStatus(els.detectStatus, `비디오 업로드 중... (${files.length}개)`);
   try {
     const result = await api("/api/pipeline/detect", { method: "POST", body: form });
@@ -3050,6 +3315,7 @@ els.detectBtn.addEventListener("click", async () => {
     endDetectSession();
     stopPolling();
     setProgress(els.detectProgressWrap, els.detectProgressBar, els.detectProgressText, null);
+    clearSeaScale();
     setStatus(els.detectStatus, err.message, "error");
     updateDetectButtonState();
   }
