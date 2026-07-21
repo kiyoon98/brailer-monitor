@@ -254,6 +254,7 @@ class DetectReportTests(unittest.TestCase):
                 max_gap_sec=8,
                 merge_segments=True,
                 remove_size_outliers=True,
+                remove_large_lower_sea_regions=True,
                 remove_tall_thin_boxes=True,
                 remove_color_outliers=True,
             )
@@ -276,6 +277,7 @@ class DetectReportTests(unittest.TestCase):
             self.assertEqual(payload["dark_skipped_video_count"], 1)
             self.assertTrue(payload["postprocess"]["merge_segments"])
             self.assertTrue(payload["postprocess"]["remove_size_outliers"])
+            self.assertTrue(payload["postprocess"]["remove_large_lower_sea_regions"])
             self.assertTrue(payload["postprocess"]["remove_tall_thin_boxes"])
             self.assertTrue(payload["postprocess"]["remove_color_outliers"])
             self.assertEqual(len(payload["timeline_frames"]), 1)
@@ -298,7 +300,11 @@ class DetectReportTests(unittest.TestCase):
             self.assertIn("Confidence ratio: 0.55", html_text)
             self.assertIn("바다 비율", html_text)
             self.assertIn("avg 35.0%", html_text)
-            self.assertIn("후처리: 8초 이내 구간 병합, 크기 이상 제거, 세로형 빈 그물 제거, 색상 이상 제거", html_text)
+            self.assertIn(
+                "후처리: 8초 이내 구간 병합, 크기 이상 제거, 하단 대형 바다 영역 제거, "
+                "세로형 빈 그물 제거, 색상 이상 제거",
+                html_text,
+            )
             self.assertIn("탐지 0개 제거", html_text)
             self.assertIn("어두운 영상 건너뛰기: 전체 2개 중 1개 건너뜀", html_text)
             self.assertIn("Ctrl/Command+휠", html_text)

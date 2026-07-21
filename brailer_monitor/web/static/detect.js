@@ -26,6 +26,7 @@ const els = {
   detectVideo: document.getElementById("detectVideo"),
   detectUploadSection: document.getElementById("detectUploadSection"),
   detectLakeSection: document.getElementById("detectLakeSection"),
+  lakeRepository: document.getElementById("lakeRepository"),
   lakeMedia: document.getElementById("lakeMedia"),
   lakeYearFolder: document.getElementById("lakeYearFolder"),
   lakeVessel: document.getElementById("lakeVessel"),
@@ -71,6 +72,7 @@ const els = {
   postMergeSegments: document.getElementById("postMergeSegments"),
   postRemovePositionOutliers: document.getElementById("postRemovePositionOutliers"),
   postRemoveSizeOutliers: document.getElementById("postRemoveSizeOutliers"),
+  postRemoveLargeLowerSeaRegions: document.getElementById("postRemoveLargeLowerSeaRegions"),
   postRemoveTallThinBoxes: document.getElementById("postRemoveTallThinBoxes"),
   postRemoveRightEdge: document.getElementById("postRemoveRightEdge"),
   postRemoveStaticShortTracks: document.getElementById("postRemoveStaticShortTracks"),
@@ -545,16 +547,16 @@ function getDetectSourceMode() {
 }
 
 function readDetectRoi() {
-  const readMargin = (input) => {
-    const value = Number(input?.value ?? 15);
-    if (!Number.isFinite(value)) return 0.15;
+  const readMargin = (input, fallbackPercent) => {
+    const value = Number(input?.value ?? fallbackPercent);
+    if (!Number.isFinite(value)) return fallbackPercent / 100;
     return Math.max(0, Math.min(49, value)) / 100;
   };
   return {
-    top: readMargin(els.detectRoiTop),
-    right: readMargin(els.detectRoiRight),
-    bottom: readMargin(els.detectRoiBottom),
-    left: readMargin(els.detectRoiLeft),
+    top: readMargin(els.detectRoiTop, 0),
+    right: readMargin(els.detectRoiRight, 15),
+    bottom: readMargin(els.detectRoiBottom, 0),
+    left: readMargin(els.detectRoiLeft, 15),
   };
 }
 
@@ -914,6 +916,7 @@ function readLakeSelection() {
     label: "초 suffix",
   }).map((value) => String(value).padStart(2, "0"));
   return {
+    repository: els.lakeRepository?.value || null,
     media: els.lakeMedia?.value || null,
     year_folder: els.lakeYearFolder?.value || null,
     vessel: els.lakeVessel?.value || null,
@@ -988,6 +991,44 @@ function populateLakeSelect(selectEl, component) {
     .join("");
 }
 
+function populateLakeRepositorySelect(spec) {
+  if (!els.lakeRepository) return;
+  const repositories = spec?.repositories || {};
+  const defaultRepository = spec?.default_repository || Object.keys(repositories)[0] || "";
+  els.lakeRepository.innerHTML = Object.entries(repositories)
+    .map(([id, repository]) => {
+      const label = repository?.label || id;
+      return `<option value="${id}"${id === defaultRepository ? " selected" : ""}>${label}</option>`;
+    })
+    .join("");
+}
+
+function selectedLakeRepositorySpec() {
+  const repositoryId = els.lakeRepository?.value || lakeSpec?.default_repository;
+  return lakeSpec?.repositories?.[repositoryId] || null;
+}
+
+function applyLakeRepositorySpec() {
+  const repository = selectedLakeRepositorySpec();
+  const components = repository?.components || lakeSpec?.components || {};
+  populateLakeSelect(els.lakeMedia, components.media);
+  populateLakeSelect(els.lakeYearFolder, components.year_folder);
+  populateLakeSelect(els.lakeVessel, components.vessel);
+  populateLakeSelect(els.lakeStream, components.stream);
+  if (els.lakeMinuteOffsets) {
+    els.lakeMinuteOffsets.value = formatLakeList(
+      repository?.minute_offsets || lakeSpec?.minute_offsets || [0],
+    );
+  }
+  if (els.lakeSecondSuffixes) {
+    const defaultSuffix = components.suffix?.default || "16";
+    els.lakeSecondSuffixes.value = String(defaultSuffix).padStart(2, "0");
+  }
+  lakeVideosReady = 0;
+  updateLakeUrlPreview();
+  updateDetectButtonState();
+}
+
 function updateLakeUrlPreview() {
   if (!els.lakeUrlPreview || !lakeSpec) return;
   let sel;
@@ -997,11 +1038,19 @@ function updateLakeUrlPreview() {
     els.lakeUrlPreview.textContent = err.message;
     return;
   }
+  const repository = selectedLakeRepositorySpec();
+  const components = repository?.components || lakeSpec.components || {};
   const minute = String(sel.minute_offsets?.[0] ?? lakeSpec.minute_offsets?.[0] ?? 0).padStart(2, "0");
-  const suffix = sel.second_suffixes?.[0] || lakeSpec.components?.suffix?.default || "16";
+  const suffix = sel.second_suffixes?.[0] || components.suffix?.default || "16";
   const filename = `${sel.vessel}_${sel.stream}_YYMMDD_HH${minute}${suffix}.mp4`;
+  const baseUrl = repository?.base_url
+    ? repository.base_url
+    : `${repository?.base_host || lakeSpec.base_host}${sel.media}/${sel.year_folder}/`;
+  const folder = String(repository?.folder_template || "").includes("{year")
+    ? "YYYY/MM/DD/HH/"
+    : "MM/DD/HH/";
   els.lakeUrlPreview.textContent =
-    `${lakeSpec.base_host}${sel.media}/${sel.year_folder}/MM/DD/HH/${filename}` +
+    `${baseUrl}${folder}${filename}` +
     " · 선택한 시작 분에서 5분 간격";
 }
 
@@ -1009,19 +1058,8 @@ async function loadLakeConfig() {
   try {
     const spec = await api("/api/pipeline/lake-videos/config");
     lakeSpec = spec;
-    const components = spec.components || {};
-    populateLakeSelect(els.lakeMedia, components.media);
-    populateLakeSelect(els.lakeYearFolder, components.year_folder);
-    populateLakeSelect(els.lakeVessel, components.vessel);
-    populateLakeSelect(els.lakeStream, components.stream);
-    if (els.lakeMinuteOffsets) {
-      els.lakeMinuteOffsets.value = formatLakeList(spec.minute_offsets || [0]);
-    }
-    if (els.lakeSecondSuffixes) {
-      const defaultSuffix = components.suffix?.default || "16";
-      els.lakeSecondSuffixes.value = String(defaultSuffix).padStart(2, "0");
-    }
-    updateLakeUrlPreview();
+    populateLakeRepositorySelect(spec);
+    applyLakeRepositorySpec();
   } catch (err) {
     console.error("loadLakeConfig failed", err);
   }
@@ -2339,6 +2377,7 @@ async function compactTimeline() {
       merge_segments: !!els.postMergeSegments?.checked,
       remove_position_outliers: !!els.postRemovePositionOutliers?.checked,
       remove_size_outliers: !!els.postRemoveSizeOutliers?.checked,
+      remove_large_lower_sea_regions: !!els.postRemoveLargeLowerSeaRegions?.checked,
       remove_tall_thin_boxes: !!els.postRemoveTallThinBoxes?.checked,
       remove_right_edge_detections: !!els.postRemoveRightEdge?.checked,
       remove_static_short_tracks: !!els.postRemoveStaticShortTracks?.checked,
@@ -2361,9 +2400,10 @@ async function compactTimeline() {
     const merged = timeline.merged_segment_count ?? Math.max(0, before - after);
     const removed = timeline.removed_detection_count ?? 0;
     const removedEvents = timeline.removed_event_count ?? 0;
+    const protectedDetections = timeline.protected_detection_count ?? 0;
     if (els.compactTimelineStatus) {
       els.compactTimelineStatus.textContent =
-        `후처리 완료 · 구간 ${before}개 -> ${after}개 · ${merged}개 병합 · 탐지 ${removed}개 제거 · 프레임 ${removedEvents}개 제거`;
+        `후처리 완료 · 구간 ${before}개 -> ${after}개 · ${merged}개 병합 · 탐지 ${removed}개 제거 · 프레임 ${removedEvents}개 제거 · 작업 반복 탐지 ${protectedDetections}개 보호`;
     }
   } catch (err) {
     if (els.compactTimelineStatus) els.compactTimelineStatus.textContent = err.message;
@@ -3085,6 +3125,7 @@ els.lakeDiscoverBtn?.addEventListener("click", discoverLakeVideos);
     updateDetectButtonState();
   });
 });
+els.lakeRepository?.addEventListener("change", applyLakeRepositorySpec);
 
 [els.lakeMinuteOffsets, els.lakeSecondSuffixes].forEach((inputEl) => {
   inputEl?.addEventListener("input", () => {

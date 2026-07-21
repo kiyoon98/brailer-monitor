@@ -1,5 +1,6 @@
 {
   "base_host": "http://10.2.10.158:8041/media/em_data/",
+  "default_repository": "em_data",
   "minute_offsets": [0, 1, 2, 3, 4],
   "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
   "components": {
@@ -27,6 +28,77 @@
       "label": "초 접미사",
       "default": "16",
       "options": ["16"]
+    }
+  },
+  "repositories": {
+    "em_data": {
+      "label": "기존 저장소 (em_data)",
+      "base_host": "http://10.2.10.158:8041/media/em_data/",
+      "folder_template": "{month:02d}/{day:02d}/{hour:02d}/",
+      "minute_offsets": [0, 1, 2, 3, 4],
+      "minute_slots": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+      "components": {
+        "media": {
+          "label": "미디어 폴더",
+          "default": "lake_win",
+          "options": ["lake_win", "lake_aurora", "lake_dream", "seibu", "pharostar"]
+        },
+        "year_folder": {
+          "label": "연도 폴더",
+          "default": "2026_decrypted",
+          "options": ["2025_decrypted", "2026_decrypted", "2027_decrypted"]
+        },
+        "vessel": {
+          "label": "선박",
+          "default": "JJR-102283",
+          "options": ["JJR-102283", "JJR-131066", "JJR-151069", "LAKE_AURORA", "JJR-211056", "seibu"]
+        },
+        "stream": {
+          "label": "스트림",
+          "default": "stream04",
+          "options": ["stream01", "stream02", "stream03", "stream04"]
+        },
+        "suffix": {
+          "label": "초 접미사",
+          "default": "16",
+          "options": ["16"]
+        }
+      }
+    },
+    "carrier_lake_aurora": {
+      "label": "Carrier / LAKE_AURORA (em_data2)",
+      "base_url": "http://10.2.10.158:8041/media/em_data2/Carrier/LAKE_AURORA_20260204_20260514_decrypted/cam/",
+      "year": 2026,
+      "folder_template": "{year:04d}/{month:02d}/{day:02d}/{hour:02d}/",
+      "minute_offsets": [3],
+      "minute_slots": [3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58],
+      "components": {
+        "media": {
+          "label": "데이터셋",
+          "default": "LAKE_AURORA_20260204_20260514_decrypted",
+          "options": ["LAKE_AURORA_20260204_20260514_decrypted"]
+        },
+        "year_folder": {
+          "label": "연도",
+          "default": "2026",
+          "options": ["2026"]
+        },
+        "vessel": {
+          "label": "선박",
+          "default": "LAKE_AURORA",
+          "options": ["LAKE_AURORA"]
+        },
+        "stream": {
+          "label": "스트림",
+          "default": "stream01",
+          "options": ["stream01", "stream02", "stream03", "stream04"]
+        },
+        "suffix": {
+          "label": "초 접미사",
+          "default": "04",
+          "options": ["04"]
+        }
+      }
     }
   }
 }

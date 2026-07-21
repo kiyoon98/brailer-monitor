@@ -478,6 +478,8 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         enabled.append("위치 이상 제거")
     if postprocess.get("remove_size_outliers"):
         enabled.append("크기 이상 제거")
+    if postprocess.get("remove_large_lower_sea_regions"):
+        enabled.append("하단 대형 바다 영역 제거")
     if postprocess.get("remove_tall_thin_boxes"):
         enabled.append("세로형 빈 그물 제거")
     if postprocess.get("remove_right_edge_detections"):
@@ -485,7 +487,11 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
     if postprocess.get("remove_static_short_tracks"):
         enabled.append("같은 위치 정지 제거")
     if postprocess.get("remove_temporal_isolated"):
-        enabled.append("시간 고립/짧은 burst 제거")
+        work_hours = float(postprocess.get("temporal_work_window_sec") or 0.0) / 3600.0
+        if work_hours > 0:
+            enabled.append(f"시간 고립/짧은 burst 제거({work_hours:g}시간 작업 내 유사 위치 보호)")
+        else:
+            enabled.append("시간 고립/짧은 burst 제거")
     if postprocess.get("remove_color_outliers"):
         enabled.append("색상 이상 제거")
     label = ", ".join(enabled) if enabled else "선택된 후처리 없음"
@@ -493,6 +499,7 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
     condition_labels = {
         "position_outlier": "위치",
         "size_outlier": "크기",
+        "large_lower_sea_region": "하단대형바다",
         "tall_thin_box": "세로형",
         "right_edge": "좌우가장자리",
         "static_short_track": "정지",
@@ -505,6 +512,8 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         if key in removed_by_condition
     ]
     removed_detail = f" ({', '.join(removed_parts)})" if removed_parts else ""
+    protected_count = int(postprocess.get("protected_detection_count") or 0)
+    protected_detail = f" · 작업 반복 탐지 {protected_count}개 보호" if protected_count else ""
     applied_at = postprocess.get("applied_at")
     applied = f" · 적용 시각 {html.escape(str(applied_at))}" if applied_at else ""
     return (
@@ -514,7 +523,7 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         f" · 병합 {int(postprocess.get('merged_segment_count') or 0)}개"
         f" · 탐지 {int(postprocess.get('removed_detection_count') or 0)}개 제거"
         f" · 프레임 {int(postprocess.get('removed_event_count') or 0)}개 제거"
-        f"{html.escape(removed_detail)}{applied}</p>"
+        f"{html.escape(removed_detail)}{protected_detail}{applied}</p>"
     )
 
 

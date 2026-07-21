@@ -137,12 +137,14 @@ python -m brailer_monitor train \
 - Lake 저장소: 날짜/시간 구간으로 원격 영상 탐색 후 배치 탐지
 - 실시간 스트림: HLS 주소를 입력해 현재 스트림 탐지
 
+Lake 저장소의 **저장소** 선택에서는 기존 `em_data` 구조와 `Carrier / LAKE_AURORA (em_data2)` 구조를 전환할 수 있습니다. Carrier 프로필은 `.../cam/YYYY/MM/DD/HH/LAKE_AURORA_streamNN_YYMMDD_HHMMSS.mp4` 형식을 사용하며 기본 시작 분은 `03`, 초 suffix는 `04`입니다.
+
 공통 옵션:
 
 - `프레임 간격`: 몇 프레임마다 추론할지 지정
 - `Confidence`: 탐지 confidence threshold. 기본값은 `0.6`입니다.
 - `추론 크기`: YOLO `imgsz`
-- `탐지 제외 여백(%)`: 상/우/하/좌 화면 가장자리에서 제외할 비율. 기본값은 모두 `15`이며, 이 경우 좌우 `15~85%`, 상하 `15~85%` 영역의 탐지만 결과로 인정합니다.
+- `탐지 제외 여백(%)`: 화면 가장자리에서 제외할 비율. 기본값은 좌우 각각 `15`, 상하 `0`이며, 이 경우 좌우 `15~85%`, 상하 `0~100%` 영역의 탐지만 결과로 인정합니다.
 - `정밀 마스크(SAM)`: bbox 기반 추가 SAM mask 생성. 기본값은 켜짐입니다.
 - `어두운 영상 건너뛰기(파일/Lake)`: 영상 여러 지점을 사전 샘플링해 전부 확실히 어두우면 YOLO 추론 없이 skip
 
@@ -185,7 +187,7 @@ python -m brailer_monitor detect-video data/raw/video.mp4 \
   --frame-stride 5 \
   --confidence 0.6 \
   --sea-ratio --sea-analysis-interval-sec 5 \
-  --roi-top 0.15 --roi-right 0.15 --roi-bottom 0.15 --roi-left 0.15 \
+  --roi-top 0 --roi-right 0.15 --roi-bottom 0 --roi-left 0.15 \
   --segmentation auto
 ```
 
@@ -204,6 +206,16 @@ python -m brailer_monitor sea-area storage \
   --vessel JJR-102283 --camera-stream stream04 \
   --minute-offsets 0,1,2,3,4 --second-suffixes 16 \
   --frame-stride 30
+```
+
+Carrier 저장소는 프로필만 지정하면 해당 경로와 기본 분·초 규칙을 사용합니다.
+
+```bash
+.venv/bin/python -m brailer_monitor sea-area storage \
+  --repository carrier_lake_aurora \
+  --start 2026-02-28T00 --end 2026-02-28T00 \
+  --camera-stream stream01 \
+  --frame-stride 75
 ```
 
 저장소의 영상 URL 하나만 검사할 수도 있습니다.
@@ -262,7 +274,7 @@ python -m brailer_monitor sea-area stream \
 - 썸네일 클릭 확대
 - 더블클릭으로 세그먼트 프레임 전체 보기
 - 8초 이내 구간 병합
-- 위치/크기/세로형 빈 그물/3-4초 정지/시간 고립 및 1초 이하 3프레임 burst/색상 이상 탐지 제거 후처리
+- 위치/크기/하단 대형 바다 영역/세로형 빈 그물/3-4초 정지/시간 고립 및 1초 이하 3프레임 burst/색상 이상 탐지 제거 후처리. 같은 카메라의 12시간 작업 범위 안에 크기와 위치가 유사한 다른 전재가 있으면 위치·크기·색상·시간 고립 제거에서 해당 탐지를 보호합니다. 하단 대형 바다 영역은 작업 중앙 mask 면적의 4배를 넘고 bbox가 화면 하단 98%에 닿으며 중심이 하단 65% 영역에 있을 때 제거되고 반복 탐지 보호를 적용하지 않습니다.
 - 현재 탐지 결과 저장
 - 저장된 결과 불러오기
 - 외부 문서용 리포트 생성

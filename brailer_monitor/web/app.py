@@ -52,9 +52,9 @@ class CaptureRequest(BaseModel):
 
 
 class DetectionRoiMargins(BaseModel):
-    top: float = Field(default=0.15, ge=0.0, le=49.0)
+    top: float = Field(default=0.0, ge=0.0, le=49.0)
     right: float = Field(default=0.15, ge=0.0, le=49.0)
-    bottom: float = Field(default=0.15, ge=0.0, le=49.0)
+    bottom: float = Field(default=0.0, ge=0.0, le=49.0)
     left: float = Field(default=0.15, ge=0.0, le=49.0)
 
     def to_dict(self) -> dict[str, float]:
@@ -70,6 +70,7 @@ class DetectionRoiMargins(BaseModel):
 
 
 class LakeRangeRequest(BaseModel):
+    repository: str | None = None
     media: str | None = None
     year_folder: str | None = None
     vessel: str | None = None
@@ -116,6 +117,7 @@ class TimelineCompactRequest(BaseModel):
     merge_segments: bool = True
     remove_position_outliers: bool = True
     remove_size_outliers: bool = True
+    remove_large_lower_sea_regions: bool = True
     remove_tall_thin_boxes: bool = True
     remove_right_edge_detections: bool = False
     remove_static_short_tracks: bool = True
@@ -387,9 +389,9 @@ async def pipeline_detect(
     calculate_sea_ratio: bool = Form(False),
     sea_only: bool = Form(False),
     sea_analysis_interval_sec: float = Form(5.0, ge=0.0, le=300.0),
-    detect_roi_top: float = Form(0.15),
+    detect_roi_top: float = Form(0.0),
     detect_roi_right: float = Form(0.15),
-    detect_roi_bottom: float = Form(0.15),
+    detect_roi_bottom: float = Form(0.0),
     detect_roi_left: float = Form(0.15),
     skip_dark_video: bool = Form(True),
     device: str | int = Form(0),
@@ -450,12 +452,15 @@ async def pipeline_lake_video_config() -> dict:
         "components": spec["components"],
         "minute_offsets": spec["minute_offsets"],
         "minute_slots": spec["minute_slots"],
+        "default_repository": spec["default_repository"],
+        "repositories": spec["repositories"],
     }
 
 
 def _load_lake_config(body: LakeRangeRequest):
     return build_lake_config_from_selection(
         {
+            "repository": body.repository,
             "media": body.media,
             "year_folder": body.year_folder,
             "vessel": body.vessel,
@@ -612,6 +617,7 @@ async def pipeline_detect_timeline_compact(body: TimelineCompactRequest | None =
                 merge_segments=body.merge_segments,
                 remove_position_outliers=body.remove_position_outliers,
                 remove_size_outliers=body.remove_size_outliers,
+                remove_large_lower_sea_regions=body.remove_large_lower_sea_regions,
                 remove_tall_thin_boxes=body.remove_tall_thin_boxes,
                 remove_right_edge_detections=body.remove_right_edge_detections,
                 remove_static_short_tracks=body.remove_static_short_tracks,

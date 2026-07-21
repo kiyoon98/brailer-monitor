@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Brailer YOLO Pipeline</title>
-  <link rel="stylesheet" href="/static/detect.css?v=5" />
+  <link rel="stylesheet" href="/static/detect.css?v=6" />
 </head>
 <body>
   <header class="header">
@@ -67,6 +67,7 @@
       </div>
       <div id="detectLakeSection" class="hidden">
         <div class="row lake-parts">
+          <label>저장소 <select id="lakeRepository"></select></label>
           <label>미디어 <select id="lakeMedia"></select></label>
           <label>연도 <select id="lakeYearFolder"></select></label>
           <label>선박 <select id="lakeVessel"></select></label>
@@ -116,9 +117,9 @@
       </div>
       <div class="row roi-controls">
         <span class="range-label">탐지 제외 여백(%)</span>
-        <label>상 <input id="detectRoiTop" type="number" value="15" min="0" max="49" step="1" /></label>
+        <label>상 <input id="detectRoiTop" type="number" value="0" min="0" max="49" step="1" /></label>
         <label>우 <input id="detectRoiRight" type="number" value="15" min="0" max="49" step="1" /></label>
-        <label>하 <input id="detectRoiBottom" type="number" value="15" min="0" max="49" step="1" /></label>
+        <label>하 <input id="detectRoiBottom" type="number" value="0" min="0" max="49" step="1" /></label>
         <label>좌 <input id="detectRoiLeft" type="number" value="15" min="0" max="49" step="1" /></label>
       </div>
       <div class="row detect-actions">
@@ -161,9 +162,10 @@
         <label><input id="postMergeSegments" type="checkbox" checked /> 8초 이내 구간 병합</label>
         <label><input id="postRemovePositionOutliers" type="checkbox" checked /> 위치 이상 제거</label>
         <label><input id="postRemoveSizeOutliers" type="checkbox" checked /> 크기 이상 제거</label>
+        <label><input id="postRemoveLargeLowerSeaRegions" type="checkbox" checked /> 하단 대형 바다 영역 제거</label>
         <label><input id="postRemoveTallThinBoxes" type="checkbox" checked /> 세로형 빈 그물 제거</label>
         <label><input id="postRemoveStaticShortTracks" type="checkbox" checked /> 같은 위치 정지 제거</label>
-        <label><input id="postRemoveTemporalIsolated" type="checkbox" checked /> 시간 고립 제거</label>
+        <label><input id="postRemoveTemporalIsolated" type="checkbox" checked /> 시간 고립 제거(같은 작업의 유사 위치 보호)</label>
         <label><input id="postRemoveColorOutliers" type="checkbox" checked /> 색상 이상 제거</label>
         <button id="compactTimelineBtn" type="button" class="secondary">후처리 적용</button>
         <span id="compactTimelineStatus" class="hint"></span>
@@ -266,6 +268,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
-  <script src="/static/detect.js?v=86"></script>
+  <script src="/static/detect.js?v=89"></script>
 </body>
 </html>

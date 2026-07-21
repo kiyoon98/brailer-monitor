@@ -61,6 +61,7 @@ class LakeVideoConfig:
     year: int
     minute_slots: tuple[int, ...]
     second_suffixes: tuple[str, ...]
+    folder_template: str = "{month:02d}/{day:02d}/{hour:02d}/"
 
     @classmethod
     def from_dict(cls, profile_id: str, payload: dict[str, Any]) -> LakeVideoConfig:
@@ -83,6 +84,9 @@ class LakeVideoConfig:
             year=int(payload.get("year", 2026)),
             minute_slots=minute_slots,
             second_suffixes=normalized_suffixes,
+            folder_template=str(
+                payload.get("folder_template", "{month:02d}/{day:02d}/{hour:02d}/")
+            ),
         )
 
 
@@ -163,11 +167,24 @@ def load_lake_component_spec(path: Path | None = None) -> dict[str, Any]:
     components = raw_components if isinstance(raw_components, dict) and raw_components else DEFAULT_LAKE_COMPONENTS
     minute_offsets = [int(value) for value in payload.get("minute_offsets", DEFAULT_MINUTE_OFFSETS)]
     minute_slots = [int(value) for value in payload.get("minute_slots", DEFAULT_MINUTE_SLOTS)]
+    repositories = payload.get("repositories")
+    if not isinstance(repositories, dict) or not repositories:
+        repositories = {
+            "em_data": {
+                "label": "기존 저장소 (em_data)",
+                "base_host": base_host,
+                "components": components,
+                "minute_offsets": minute_offsets,
+                "minute_slots": minute_slots,
+            }
+        }
     return {
         "base_host": base_host,
         "components": components,
         "minute_offsets": minute_offsets,
         "minute_slots": minute_slots,
+        "default_repository": str(payload.get("default_repository", next(iter(repositories)))),
+        "repositories": repositories,
     }
 
 
@@ -265,8 +282,17 @@ def build_lake_config_from_selection(
 ) -> LakeVideoConfig:
     """Compose a LakeVideoConfig from selected URL components."""
     spec = spec or load_lake_component_spec(path)
-    components = spec["components"]
     sel = selection or {}
+    repositories = spec.get("repositories")
+    repository_id = str(sel.get("repository") or spec.get("default_repository") or "em_data")
+    repository: dict[str, Any] = {}
+    if isinstance(repositories, dict) and repositories:
+        if repository_id not in repositories:
+            known = ", ".join(sorted(repositories))
+            raise ValueError(f"알 수 없는 Lake 저장소: {repository_id} (사용 가능: {known})")
+        raw_repository = repositories[repository_id]
+        repository = raw_repository if isinstance(raw_repository, dict) else {}
+    components = repository.get("components") or spec["components"]
 
     media = _selected_or_default(components.get("media", {}), sel.get("media"), name="media")
     year_folder = _selected_or_default(
@@ -283,27 +309,45 @@ def build_lake_config_from_selection(
     suffix_default = [default_suffix] if default_suffix not in (None, "") else suffix_options or DEFAULT_SECOND_SUFFIXES
     suffixes = _normalize_second_suffixes(sel.get("second_suffixes") or sel.get("second_suffix"), suffix_default)
     if sel.get("minute_slots") not in (None, ""):
-        minute_slots = _normalize_minute_slots(sel.get("minute_slots"), spec["minute_slots"])
+        minute_slots = _normalize_minute_slots(
+            sel.get("minute_slots"),
+            repository.get("minute_slots", spec["minute_slots"]),
+        )
     else:
         offsets = _normalize_minute_offsets(
             sel.get("minute_offsets"),
-            spec.get("minute_offsets", DEFAULT_MINUTE_OFFSETS),
+            repository.get(
+                "minute_offsets",
+                spec.get("minute_offsets", DEFAULT_MINUTE_OFFSETS),
+            ),
         )
         minute_slots = _minute_slots_from_offsets(offsets)
 
-    base_url = f"{spec['base_host']}{media}/{year_folder}/"
+    base_url = str(repository.get("base_url", "")).strip()
+    if not base_url:
+        repository_base_host = str(repository.get("base_host", spec["base_host"])).strip()
+        if repository_base_host and not repository_base_host.endswith("/"):
+            repository_base_host += "/"
+        base_url = f"{repository_base_host}{media}/{year_folder}/"
+    elif not base_url.endswith("/"):
+        base_url += "/"
     digits = "".join(ch for ch in str(year_folder) if ch.isdigit())[:4]
-    year = int(digits) if len(digits) == 4 else datetime.now().year
-    label = f"{media}/{year_folder}/{vessel}_{stream}"
+    year = int(repository.get("year") or (int(digits) if len(digits) == 4 else datetime.now().year))
+    repository_label = str(repository.get("label", repository_id))
+    label = f"{repository_label}/{vessel}_{stream}"
+    folder_template = str(
+        repository.get("folder_template", "{month:02d}/{day:02d}/{hour:02d}/")
+    )
 
     return LakeVideoConfig(
-        profile_id=label,
+        profile_id=f"{repository_id}:{vessel}_{stream}",
         label=label,
         base_url=base_url,
         file_prefix=f"{vessel}_{stream}",
         year=year,
         minute_slots=minute_slots,
         second_suffixes=suffixes,
+        folder_template=folder_template,
     )
 
 
@@ -343,8 +387,22 @@ def build_filename(
     return f"{config.file_prefix}_{yymmdd}_{hhmmss}.mp4"
 
 
-def build_folder_path(hour_dt: datetime) -> str:
-    return f"{hour_dt.month:02d}/{hour_dt.day:02d}/{hour_dt.hour:02d}/"
+def build_folder_path(hour_dt: datetime, config: LakeVideoConfig | None = None) -> str:
+    template = (
+        config.folder_template
+        if config is not None
+        else "{month:02d}/{day:02d}/{hour:02d}/"
+    )
+    try:
+        folder = template.format(
+            year=hour_dt.year,
+            month=hour_dt.month,
+            day=hour_dt.day,
+            hour=hour_dt.hour,
+        )
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Lake 날짜 폴더 형식이 올바르지 않습니다: {template}") from exc
+    return folder if folder.endswith("/") else f"{folder}/"
 
 
 def _iter_slot_suffixes(config: LakeVideoConfig) -> Iterable[str]:
@@ -372,7 +430,7 @@ def list_candidate_videos(
         end_hour=end_hour,
         year=config.year,
     ):
-        folder = build_folder_path(hour_dt)
+        folder = build_folder_path(hour_dt, config)
         for minute in config.minute_slots:
             for suffix in _iter_slot_suffixes(config):
                 filename = build_filename(hour_dt, minute, config, second_suffix=suffix)

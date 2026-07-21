@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -16,14 +17,33 @@ from .video_time import absolute_frame_time, format_absolute_time, parse_video_s
 TEMPORAL_ISOLATION_WINDOW_SEC = 10.0
 TEMPORAL_SHORT_BURST_MAX_FRAMES = 3
 TEMPORAL_SHORT_BURST_MAX_DURATION_SEC = 1.0
+TEMPORAL_WORK_WINDOW_SEC = 12.0 * 60.0 * 60.0
+TEMPORAL_WORK_POSITION_MIN_PX = 40.0
+TEMPORAL_WORK_POSITION_DIAG_RATIO = 0.75
+WORK_REPEATED_PROTECTED_CONDITIONS = frozenset(
+    {"position_outlier", "size_outlier", "temporal_isolated", "color_outlier"}
+)
+LARGE_LOWER_SEA_MIN_GROUP_SIZE = 10
+LARGE_LOWER_SEA_AREA_MEDIAN_RATIO = 4.0
+LARGE_LOWER_SEA_BOTTOM_Y_RATIO = 0.98
+LARGE_LOWER_SEA_CENTER_Y_RATIO = 0.65
+POSITION_WORK_MIN_GROUP_SIZE = 10
+POSITION_LOWER_ROI_Y_RATIO = 0.70
+POSITION_ROI_EDGE_MARGIN_RATIO = 0.02
+POSITION_ROI_EDGE_MIN_VIDEO_COUNT = 3
 STATIC_POSITION_MAX_GAP_SEC = 8.0
 STATIC_POSITION_MIN_DURATION_SEC = 3.0
 STATIC_POSITION_MIN_FRAMES = 6
 STATIC_POSITION_MAX_CENTER_MOVE_PX = 30.0
 STATIC_POSITION_MAX_CENTER_MOVE_DIAG_RATIO = 0.2
+STATIC_POSITION_STRICT_MIN_FRAMES = 3
+STATIC_POSITION_STRICT_MIN_DURATION_SEC = 0.5
+STATIC_POSITION_STRICT_MAX_CENTER_MOVE_PX = 2.0
+STATIC_POSITION_STRICT_MAX_SIZE_CHANGE_RATIO = 0.08
 EDGE_DEFAULT_FRAME_WIDTH = 1280.0
 EDGE_CENTER_X_RATIO = 0.85
 EDGE_SIDE_X_RATIO = 0.985
+_VIDEO_SOURCE_SUFFIX_RE = re.compile(r"_\d{6}_\d{6}$")
 
 
 def _now_iso() -> str:
@@ -45,6 +65,19 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _datetime_timestamp(value: datetime | None) -> float | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.timestamp()
+
+
+def _video_source_key(video_name: str) -> str:
+    stem = Path(video_name.rsplit("/", 1)[-1]).stem
+    return _VIDEO_SOURCE_SUFFIX_RE.sub("", stem)
 
 
 def load_timeline(path: Path) -> dict[str, Any]:
@@ -408,19 +441,30 @@ def _bbox_values(det: dict[str, Any]) -> list[float] | None:
 def _flatten_timeline_detections(timeline: dict[str, Any]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     video_widths: dict[str, float] = {}
+    video_heights: dict[str, float] = {}
     for video in timeline.get("videos", []) or []:
         try:
             width = float(video.get("width") or 0.0)
+            height = float(video.get("height") or 0.0)
         except (TypeError, ValueError):
             width = 0.0
+            height = 0.0
+        video_name = str(video.get("video_name") or "")
         if width > 0:
-            video_widths[str(video.get("video_name") or "")] = width
+            video_widths[video_name] = width
+        if height > 0:
+            video_heights[video_name] = height
     for event_index, event in enumerate(timeline.get("events", []) or []):
         video_name = str(event.get("video_name") or "")
+        absolute_dt = _parse_iso_datetime(event.get("absolute_time"))
+        if absolute_dt is None:
+            absolute_dt = absolute_frame_time(video_name, float(event.get("timestamp_sec") or 0.0))
         try:
             frame_width = float(event.get("width") or video_widths.get(video_name) or EDGE_DEFAULT_FRAME_WIDTH)
+            frame_height = float(event.get("height") or video_heights.get(video_name) or 720.0)
         except (TypeError, ValueError):
             frame_width = EDGE_DEFAULT_FRAME_WIDTH
+            frame_height = 720.0
         for det_index, det in enumerate(event.get("detections") or []):
             bbox = _bbox_values(det)
             if bbox is None:
@@ -429,6 +473,7 @@ def _flatten_timeline_detections(timeline: dict[str, Any]) -> list[dict[str, Any
             area = detection_area_px(det)
             if area <= 0:
                 area = int((x2 - x1) * (y2 - y1))
+            class_name = str(det.get("class_name") or "")
             entries.append(
                 {
                     "key": (event_index, det_index),
@@ -441,7 +486,10 @@ def _flatten_timeline_detections(timeline: dict[str, Any]) -> list[dict[str, Any
                     "diag": ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5,
                     "area": area,
                     "frame_width": frame_width,
-                    "group": (video_name, str(det.get("class_name") or "")),
+                    "frame_height": frame_height,
+                    "group": (video_name, class_name),
+                    "work_group": (_video_source_key(video_name), class_name),
+                    "absolute_timestamp": _datetime_timestamp(absolute_dt),
                     "frame_index": int(event.get("frame_index") or 0),
                     "timestamp_sec": float(event.get("timestamp_sec") or 0.0),
                     "job_id": str(event.get("job_id") or ""),
@@ -457,22 +505,84 @@ def _group_entries(entries: list[dict[str, Any]]) -> dict[tuple[str, str], list[
     return groups
 
 
+def _position_outlier_keys_for_group(
+    group: list[dict[str, Any]],
+    *,
+    min_group_size: int,
+) -> set[tuple[int, int]]:
+    if len(group) < min_group_size:
+        return set()
+    xs = [entry["center"][0] for entry in group]
+    ys = [entry["center"][1] for entry in group]
+    mx = median(xs)
+    my = median(ys)
+    distances = [((entry["center"][0] - mx) ** 2 + (entry["center"][1] - my) ** 2) ** 0.5 for entry in group]
+    med_dist = median(distances)
+    mad = median([abs(distance - med_dist) for distance in distances])
+    med_diag = median([entry["diag"] for entry in group])
+    threshold = med_dist + max(3.0 * mad, 1.5 * med_diag, 80.0)
+    return {
+        entry["key"]
+        for entry, distance in zip(group, distances)
+        if distance > threshold
+    }
+
+
 def _position_outlier_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
     remove: set[tuple[int, int]] = set()
     for group in _group_entries(entries).values():
-        if len(group) < 5:
-            continue
-        xs = [entry["center"][0] for entry in group]
-        ys = [entry["center"][1] for entry in group]
-        mx = median(xs)
-        my = median(ys)
-        distances = [((entry["center"][0] - mx) ** 2 + (entry["center"][1] - my) ** 2) ** 0.5 for entry in group]
-        med_dist = median(distances)
-        mad = median([abs(distance - med_dist) for distance in distances])
-        med_diag = median([entry["diag"] for entry in group])
-        threshold = med_dist + max(3.0 * mad, 1.5 * med_diag, 80.0)
-        for entry, distance in zip(group, distances):
-            if distance > threshold:
+        remove.update(_position_outlier_keys_for_group(group, min_group_size=5))
+    return remove
+
+
+def _is_lower_roi_boundary_detection(entry: dict[str, Any]) -> bool:
+    detect_roi = entry["event"].get("detect_roi") or {}
+    xyxy = detect_roi.get("xyxy_px") or []
+    if not isinstance(xyxy, (list, tuple)) or len(xyxy) != 4:
+        return False
+    try:
+        roi_x1 = float(xyxy[0])
+        roi_x2 = float(xyxy[2])
+        frame_width = float(entry.get("frame_width") or 0.0)
+        frame_height = float(entry.get("frame_height") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if roi_x2 <= roi_x1 or frame_width <= 0 or frame_height <= 0:
+        return False
+    center_x, center_y = entry["center"]
+    edge_margin = frame_width * POSITION_ROI_EDGE_MARGIN_RATIO
+    return (
+        float(center_y) >= frame_height * POSITION_LOWER_ROI_Y_RATIO
+        and min(abs(float(center_x) - roi_x1), abs(float(center_x) - roi_x2)) <= edge_margin
+    )
+
+
+def _repeated_lower_roi_boundary_position_outlier_keys(
+    entries: list[dict[str, Any]],
+) -> set[tuple[int, int]]:
+    remove: set[tuple[int, int]] = set()
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        groups[entry["work_group"]].append(entry)
+
+    for group in groups.values():
+        work_outliers = _position_outlier_keys_for_group(
+            group,
+            min_group_size=POSITION_WORK_MIN_GROUP_SIZE,
+        )
+        candidates = [
+            entry
+            for entry in group
+            if entry["key"] in work_outliers and _is_lower_roi_boundary_detection(entry)
+        ]
+        for entry in candidates:
+            matching_videos = {
+                str(other["event"].get("video_name") or "")
+                for other in candidates
+                if _similar_work_detection(entry, other)
+            }
+            matching_videos.discard("")
+            if len(matching_videos) >= POSITION_ROI_EDGE_MIN_VIDEO_COUNT:
                 remove.add(entry["key"])
     return remove
 
@@ -489,6 +599,32 @@ def _size_outlier_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
         for entry in group:
             area = float(entry["area"])
             if area <= med_area * 0.5 or area >= med_area * 2.0:
+                remove.add(entry["key"])
+    return remove
+
+
+def _large_lower_sea_region_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
+    remove: set[tuple[int, int]] = set()
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        groups[entry["work_group"]].append(entry)
+
+    for group in groups.values():
+        areas = [float(entry["area"]) for entry in group if float(entry["area"]) > 0]
+        if len(areas) < LARGE_LOWER_SEA_MIN_GROUP_SIZE:
+            continue
+        med_area = median(areas)
+        if med_area <= 0:
+            continue
+        for entry in group:
+            frame_height = float(entry.get("frame_height") or 720.0)
+            if frame_height <= 0:
+                frame_height = 720.0
+            if (
+                float(entry["area"]) > med_area * LARGE_LOWER_SEA_AREA_MEDIAN_RATIO
+                and float(entry["bbox"][3]) >= frame_height * LARGE_LOWER_SEA_BOTTOM_Y_RATIO
+                and float(entry["center"][1]) >= frame_height * LARGE_LOWER_SEA_CENTER_Y_RATIO
+            ):
                 remove.add(entry["key"])
     return remove
 
@@ -559,8 +695,6 @@ def _static_short_track_keys(entries: list[dict[str, Any]], videos: list[dict[st
 
         for run in runs:
             duration_sec = float(run[-1]["timestamp_sec"]) - float(run[0]["timestamp_sec"])
-            if duration_sec < STATIC_POSITION_MIN_DURATION_SEC and len(run) < STATIC_POSITION_MIN_FRAMES:
-                continue
             median_x = median([entry["center"][0] for entry in run])
             median_y = median([entry["center"][1] for entry in run])
             max_move = max(
@@ -572,7 +706,22 @@ def _static_short_track_keys(entries: list[dict[str, Any]], videos: list[dict[st
                 STATIC_POSITION_MAX_CENTER_MOVE_PX,
                 med_diag * STATIC_POSITION_MAX_CENTER_MOVE_DIAG_RATIO,
             )
-            if max_move <= motion_threshold:
+            normal_static = (
+                duration_sec >= STATIC_POSITION_MIN_DURATION_SEC
+                or len(run) >= STATIC_POSITION_MIN_FRAMES
+            ) and max_move <= motion_threshold
+            max_size_change_ratio = (
+                max(abs(float(entry["diag"]) - med_diag) / med_diag for entry in run)
+                if med_diag > 0
+                else float("inf")
+            )
+            strict_static = (
+                len(run) >= STATIC_POSITION_STRICT_MIN_FRAMES
+                and duration_sec >= STATIC_POSITION_STRICT_MIN_DURATION_SEC
+                and max_move <= STATIC_POSITION_STRICT_MAX_CENTER_MOVE_PX
+                and max_size_change_ratio <= STATIC_POSITION_STRICT_MAX_SIZE_CHANGE_RATIO
+            )
+            if normal_static or strict_static:
                 remove.update(entry["key"] for entry in run)
     return remove
 
@@ -593,6 +742,55 @@ def _similar_temporal_detection(a: dict[str, Any], b: dict[str, Any]) -> bool:
     if not (0.5 <= area_ratio <= 2.0 and 0.5 <= width_ratio <= 2.0 and 0.5 <= height_ratio <= 2.0):
         return False
     return True
+
+
+def _similar_work_detection(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    if not _similar_temporal_detection(a, b):
+        return False
+    center_a = a["center"]
+    center_b = b["center"]
+    center_distance = (
+        (float(center_a[0]) - float(center_b[0])) ** 2
+        + (float(center_a[1]) - float(center_b[1])) ** 2
+    ) ** 0.5
+    smaller_diag = min(float(a.get("diag") or 0.0), float(b.get("diag") or 0.0))
+    position_threshold = max(
+        TEMPORAL_WORK_POSITION_MIN_PX,
+        smaller_diag * TEMPORAL_WORK_POSITION_DIAG_RATIO,
+    )
+    return center_distance <= position_threshold
+
+
+def _work_repeated_detection_keys(
+    entries: list[dict[str, Any]],
+    candidate_keys: set[tuple[int, int]],
+    *,
+    work_window_sec: float = TEMPORAL_WORK_WINDOW_SEC,
+    local_window_sec: float = TEMPORAL_ISOLATION_WINDOW_SEC,
+) -> set[tuple[int, int]]:
+    protected: set[tuple[int, int]] = set()
+    if not candidate_keys or work_window_sec <= local_window_sec:
+        return protected
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        if entry.get("absolute_timestamp") is not None:
+            groups[entry["work_group"]].append(entry)
+
+    for group in groups.values():
+        candidates = [entry for entry in group if entry["key"] in candidate_keys]
+        for entry in candidates:
+            entry_time = float(entry["absolute_timestamp"])
+            for other in group:
+                if other["key"] == entry["key"]:
+                    continue
+                time_gap = abs(float(other["absolute_timestamp"]) - entry_time)
+                if time_gap <= local_window_sec or time_gap > work_window_sec:
+                    continue
+                if _similar_work_detection(entry, other):
+                    protected.add(entry["key"])
+                    break
+    return protected
 
 
 def _temporal_merge_protected_keys(
@@ -630,6 +828,7 @@ def _temporal_isolated_keys(
     window_sec: float = TEMPORAL_ISOLATION_WINDOW_SEC,
     protect_tail_sec: float = 0.0,
     merge_protect_gap_sec: float = 0.0,
+    protect_repeated_work: bool = True,
 ) -> set[tuple[int, int]]:
     remove: set[tuple[int, int]] = set()
     window = max(0.0, float(window_sec))
@@ -691,6 +890,16 @@ def _temporal_isolated_keys(
             duration_sec = float(run[-1]["timestamp_sec"]) - float(run[0]["timestamp_sec"])
             if duration_sec <= TEMPORAL_SHORT_BURST_MAX_DURATION_SEC:
                 remove.update(entry["key"] for entry in run)
+
+    if protect_repeated_work:
+        remove.difference_update(
+            _work_repeated_detection_keys(
+                entries,
+                remove,
+                work_window_sec=TEMPORAL_WORK_WINDOW_SEC,
+                local_window_sec=window,
+            )
+        )
     return remove
 
 
@@ -802,6 +1011,7 @@ def compact_timeline_segments(
     merge_segments: bool = True,
     remove_position_outliers: bool = False,
     remove_size_outliers: bool = False,
+    remove_large_lower_sea_regions: bool = False,
     remove_tall_thin_boxes: bool = False,
     remove_right_edge_detections: bool = False,
     remove_static_short_tracks: bool = False,
@@ -817,10 +1027,31 @@ def compact_timeline_segments(
     before_events = len(timeline.get("events", []))
     before = len(build_segments(timeline, merge_gap_sec=0))
     entries = _flatten_timeline_detections(timeline)
+    work_repeated_keys = _work_repeated_detection_keys(
+        entries,
+        {entry["key"] for entry in entries},
+    )
+    repeated_lower_roi_boundary_keys = (
+        _repeated_lower_roi_boundary_position_outlier_keys(entries)
+        if remove_position_outliers
+        else set()
+    )
+    position_outlier_keys = (
+        _position_outlier_keys(entries) | repeated_lower_roi_boundary_keys
+        if remove_position_outliers
+        else set()
+    )
     remove_by_condition: dict[str, int] = {}
+    protected_by_condition: dict[str, int] = {}
+    protected_keys: set[tuple[int, int]] = set()
     remove_keys: set[tuple[int, int]] = set()
     for name, enabled, finder in (
-        ("position_outlier", remove_position_outliers, lambda: _position_outlier_keys(entries)),
+        (
+            "large_lower_sea_region",
+            remove_large_lower_sea_regions,
+            lambda: _large_lower_sea_region_keys(entries),
+        ),
+        ("position_outlier", remove_position_outliers, lambda: set(position_outlier_keys)),
         ("right_edge", remove_right_edge_detections, lambda: _right_edge_keys(entries)),
         ("size_outlier", remove_size_outliers, lambda: _size_outlier_keys(entries)),
         ("tall_thin_box", remove_tall_thin_boxes, lambda: _tall_thin_box_keys(entries)),
@@ -832,18 +1063,34 @@ def compact_timeline_segments(
                 entries,
                 protect_tail_sec=temporal_isolation_protect_tail_sec,
                 merge_protect_gap_sec=float(max_gap_sec) if merge_segments else 0.0,
+                protect_repeated_work=False,
             ),
         ),
         ("color_outlier", remove_color_outliers, lambda: _color_outlier_keys(entries, jobs_root)),
     ):
         if not enabled:
             remove_by_condition[name] = 0
+            protected_by_condition[name] = 0
             continue
         keys = finder()
+        protectable_keys = (
+            keys - repeated_lower_roi_boundary_keys
+            if name == "position_outlier"
+            else keys
+        )
+        condition_protected = (
+            protectable_keys & work_repeated_keys
+            if name in WORK_REPEATED_PROTECTED_CONDITIONS
+            else set()
+        )
+        protected_by_condition[name] = len(condition_protected)
+        protected_keys.update(condition_protected)
+        keys.difference_update(condition_protected)
         remove_by_condition[name] = len(keys - remove_keys)
         remove_keys.update(keys)
 
     removed_detections, removed_events = _remove_detections(timeline, remove_keys)
+    retained_protected_keys = protected_keys - remove_keys
     filtered_segment_count = len(build_segments(timeline, merge_gap_sec=0))
     timeline["segment_merge_gap_sec"] = float(max_gap_sec) if merge_segments else 0.0
     after = len(build_segments(timeline))
@@ -853,7 +1100,17 @@ def compact_timeline_segments(
         "merge_segments": bool(merge_segments),
         "segment_merge_gap_sec": float(max_gap_sec) if merge_segments else 0.0,
         "remove_position_outliers": bool(remove_position_outliers),
+        "position_work_min_group_size": POSITION_WORK_MIN_GROUP_SIZE,
+        "position_lower_roi_y_ratio": POSITION_LOWER_ROI_Y_RATIO,
+        "position_roi_edge_margin_ratio": POSITION_ROI_EDGE_MARGIN_RATIO,
+        "position_roi_edge_min_video_count": POSITION_ROI_EDGE_MIN_VIDEO_COUNT,
+        "position_lower_roi_boundary_candidate_count": len(repeated_lower_roi_boundary_keys),
         "remove_size_outliers": bool(remove_size_outliers),
+        "remove_large_lower_sea_regions": bool(remove_large_lower_sea_regions),
+        "large_lower_sea_min_group_size": LARGE_LOWER_SEA_MIN_GROUP_SIZE,
+        "large_lower_sea_area_median_ratio": LARGE_LOWER_SEA_AREA_MEDIAN_RATIO,
+        "large_lower_sea_bottom_y_ratio": LARGE_LOWER_SEA_BOTTOM_Y_RATIO,
+        "large_lower_sea_center_y_ratio": LARGE_LOWER_SEA_CENTER_Y_RATIO,
         "remove_tall_thin_boxes": bool(remove_tall_thin_boxes),
         "remove_right_edge_detections": bool(remove_right_edge_detections),
         "right_edge_center_x_ratio": EDGE_CENTER_X_RATIO,
@@ -868,10 +1125,21 @@ def compact_timeline_segments(
         "static_position_min_frames": STATIC_POSITION_MIN_FRAMES,
         "static_position_max_center_move_px": STATIC_POSITION_MAX_CENTER_MOVE_PX,
         "static_position_max_center_move_diag_ratio": STATIC_POSITION_MAX_CENTER_MOVE_DIAG_RATIO,
+        "static_position_strict_min_frames": STATIC_POSITION_STRICT_MIN_FRAMES,
+        "static_position_strict_min_duration_sec": STATIC_POSITION_STRICT_MIN_DURATION_SEC,
+        "static_position_strict_max_center_move_px": STATIC_POSITION_STRICT_MAX_CENTER_MOVE_PX,
+        "static_position_strict_max_size_change_ratio": STATIC_POSITION_STRICT_MAX_SIZE_CHANGE_RATIO,
         "remove_temporal_isolated": bool(remove_temporal_isolated),
         "temporal_isolation_window_sec": TEMPORAL_ISOLATION_WINDOW_SEC,
         "temporal_short_burst_max_frames": TEMPORAL_SHORT_BURST_MAX_FRAMES,
         "temporal_short_burst_max_duration_sec": TEMPORAL_SHORT_BURST_MAX_DURATION_SEC,
+        "temporal_work_window_sec": TEMPORAL_WORK_WINDOW_SEC,
+        "temporal_work_position_min_px": TEMPORAL_WORK_POSITION_MIN_PX,
+        "temporal_work_position_diag_ratio": TEMPORAL_WORK_POSITION_DIAG_RATIO,
+        "work_repeated_detection_count": len(work_repeated_keys),
+        "protected_candidate_count": len(protected_keys),
+        "protected_detection_count": len(retained_protected_keys),
+        "protected_by_condition": protected_by_condition,
         "temporal_isolation_protect_tail_sec": float(temporal_isolation_protect_tail_sec),
         "temporal_merge_protect_gap_sec": float(max_gap_sec) if merge_segments else 0.0,
         "remove_color_outliers": bool(remove_color_outliers),
@@ -894,6 +1162,9 @@ def compact_timeline_segments(
         "removed_detection_count": removed_detections,
         "removed_event_count": removed_events,
         "removed_by_condition": remove_by_condition,
+        "protected_candidate_count": len(protected_keys),
+        "protected_detection_count": len(retained_protected_keys),
+        "protected_by_condition": protected_by_condition,
         "before_segment_count": before,
         "filtered_segment_count": filtered_segment_count,
         "segment_count": after,

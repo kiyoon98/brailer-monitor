@@ -349,6 +349,7 @@ def _sea_storage_candidates(args: argparse.Namespace) -> list[dict[str, str]]:
     config_path = Path(args.config)
     config = build_lake_config_from_selection(
         {
+            "repository": args.repository,
             "media": args.media,
             "year_folder": args.year_folder,
             "vessel": args.vessel,
@@ -611,9 +612,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="Sea analysis interval in seconds; 0 means every processed frame (max: 300)",
     )
-    detect_vid.add_argument("--roi-top", type=float, default=0.15)
+    detect_vid.add_argument("--roi-top", type=float, default=0.0)
     detect_vid.add_argument("--roi-right", type=float, default=0.15)
-    detect_vid.add_argument("--roi-bottom", type=float, default=0.15)
+    detect_vid.add_argument("--roi-bottom", type=float, default=0.0)
     detect_vid.add_argument("--roi-left", type=float, default=0.15)
     detect_vid.add_argument("--max-frames", type=int, default=None)
     detect_vid.add_argument("--no-preview", action="store_true")
@@ -626,6 +627,7 @@ def build_parser() -> argparse.ArgumentParser:
     sea_storage.add_argument("--url", help="Single storage video URL; bypass Lake range discovery")
     sea_storage.add_argument("--start", help="Range start hour (YYYY-MM-DDTHH or MM-DDTHH)")
     sea_storage.add_argument("--end", help="Range end hour (YYYY-MM-DDTHH or MM-DDTHH)")
+    sea_storage.add_argument("--repository", default=None, help="Storage repository profile")
     sea_storage.add_argument("--media", default=None, help="Lake media folder, e.g. lake_win")
     sea_storage.add_argument("--year-folder", default=None, help="Lake year folder, e.g. 2026_decrypted")
     sea_storage.add_argument("--vessel", default=None, help="Vessel name, e.g. JJR-102283")

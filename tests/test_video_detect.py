@@ -328,6 +328,13 @@ class VideoDetectTests(unittest.TestCase):
         self.assertEqual(roi["xyxy_px"], [150, 75, 850, 425])
         self.assertEqual(roi["label"], "x 15-85%, y 15-85%")
 
+    def test_default_detection_roi_excludes_only_side_margins(self) -> None:
+        roi = detection_roi_for_frame(1000, 500)
+
+        self.assertEqual(roi["margins"], {"top": 0.0, "right": 0.15, "bottom": 0.0, "left": 0.15})
+        self.assertEqual(roi["xyxy_px"], [150, 0, 850, 500])
+        self.assertEqual(roi["label"], "x 15-85%, y 0-100%")
+
     def test_detection_to_dict_includes_mask_polygon_and_size(self) -> None:
         mask = np.zeros((20, 30), dtype=np.float32)
         mask[5:15, 7:22] = 1.0

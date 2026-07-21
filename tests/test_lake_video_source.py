@@ -17,6 +17,7 @@ from brailer_monitor.lake_video_source import (
     iter_hours_in_range,
     list_candidate_videos,
     list_lake_profile_summaries,
+    load_lake_component_spec,
     load_lake_video_config,
 )
 
@@ -70,6 +71,39 @@ class LakeVideoSourceTests(unittest.TestCase):
             build_filename(hour, 40, self.lake),
             "LAKE_AURORA_stream03_251017_004023.mp4",
         )
+
+    def test_carrier_lake_aurora_repository_builds_year_folder_url(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "config" / "lake_video.json"
+        spec = load_lake_component_spec(config_path)
+        config = build_lake_config_from_selection(
+            {
+                "repository": "carrier_lake_aurora",
+                "stream": "stream01",
+            },
+            spec=spec,
+        )
+
+        videos = list_candidate_videos(
+            start_month=2,
+            start_day=28,
+            start_hour=0,
+            end_month=2,
+            end_day=28,
+            end_hour=0,
+            config=config,
+        )
+
+        self.assertEqual(config.year, 2026)
+        self.assertEqual(config.minute_slots, (3, 8, 13, 18, 23, 28, 33, 38, 43, 48, 53, 58))
+        self.assertEqual(config.second_suffixes, ("04",))
+        self.assertEqual(len(videos), 12)
+        self.assertEqual(
+            videos[0]["url"],
+            "http://10.2.10.158:8041/media/em_data2/Carrier/"
+            "LAKE_AURORA_20260204_20260514_decrypted/cam/2026/02/28/00/"
+            "LAKE_AURORA_stream01_260228_000304.mp4",
+        )
+        self.assertTrue(videos[-1]["url"].endswith("/LAKE_AURORA_stream01_260228_005804.mp4"))
 
     def test_list_candidates_for_single_hour(self) -> None:
         videos = list_candidate_videos(

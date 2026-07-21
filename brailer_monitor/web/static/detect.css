@@ -336,7 +336,7 @@ button.small,
 .detect-source label { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text); }
 .lake-parts { gap: 0.6rem; flex-wrap: wrap; }
 .lake-parts label { display: grid; gap: 0.25rem; font-size: 0.8rem; color: var(--muted); }
-.lake-parts select { min-width: 8.5rem; }
+.lake-parts select { min-width: 8.5rem; max-width: min(22rem, calc(100vw - 3rem)); }
 .lake-range { align-items: end; }
 .lake-range .range-label {
   color: var(--muted);

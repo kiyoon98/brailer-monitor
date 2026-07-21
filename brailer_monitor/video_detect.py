@@ -48,7 +48,12 @@ SEA_COMPONENT_MIN_ROI_OVERLAP_RATIO = 0.08
 SEA_EDGE_SEED_MIN_SCORE = 0.15
 SEA_EDGE_SEED_BEST_RATIO = 0.85
 SEA_EDGE_SEED_MIN_PIXELS = 80
-DEFAULT_DETECT_ROI_MARGIN = 0.15
+DEFAULT_DETECT_ROI_MARGINS = {
+    "top": 0.0,
+    "right": 0.15,
+    "bottom": 0.0,
+    "left": 0.15,
+}
 
 
 class DetectionCancelled(Exception):
@@ -518,7 +523,7 @@ def _detection_to_dict(
     return out
 
 
-def _coerce_roi_margin(value: Any, default: float = DEFAULT_DETECT_ROI_MARGIN) -> float:
+def _coerce_roi_margin(value: Any, default: float) -> float:
     try:
         margin = float(value)
     except (TypeError, ValueError):
@@ -531,10 +536,8 @@ def _coerce_roi_margin(value: Any, default: float = DEFAULT_DETECT_ROI_MARGIN) -
 def normalize_detection_roi_margins(margins: dict[str, Any] | None) -> dict[str, float]:
     source = margins or {}
     normalized = {
-        "top": _coerce_roi_margin(source.get("top")),
-        "right": _coerce_roi_margin(source.get("right")),
-        "bottom": _coerce_roi_margin(source.get("bottom")),
-        "left": _coerce_roi_margin(source.get("left")),
+        key: _coerce_roi_margin(source.get(key), default)
+        for key, default in DEFAULT_DETECT_ROI_MARGINS.items()
     }
 
     horizontal = normalized["left"] + normalized["right"]
