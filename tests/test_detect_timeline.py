@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from brailer_monitor.detect_timeline import (
+    _is_uniform_bright_color,
+    _sparse_static_work_outlier_keys,
     build_segments,
     compact_timeline_segments,
     detection_area_px,
@@ -22,6 +24,49 @@ from brailer_monitor.detect_timeline import (
 
 
 class DetectTimelineTests(unittest.TestCase):
+    def test_sparse_static_work_outlier_requires_work_level_position_anomaly(self) -> None:
+        entries = []
+        for index in range(10):
+            entries.append(
+                {
+                    "key": (index, 0),
+                    "work_group": ("camera", "brailer"),
+                    "center": (100.0 + index % 2, 100.0),
+                    "width": 40.0,
+                    "height": 40.0,
+                    "diag": 56.6,
+                    "absolute_timestamp": float(index),
+                    "event": {"video_name": f"camera_260314_000{index:02d}.mp4"},
+                }
+            )
+        expected = set()
+        for index in range(6):
+            key = (10 + index, 0)
+            expected.add(key)
+            entries.append(
+                {
+                    "key": key,
+                    "work_group": ("camera", "brailer"),
+                    "center": (1018.0 + index % 2, 444.0 + index % 3),
+                    "width": 120.0,
+                    "height": 154.0,
+                    "diag": 195.2,
+                    "absolute_timestamp": float(index * 60),
+                    "event": {"video_name": f"camera_260314_01{index // 2:02d}04.mp4"},
+                }
+            )
+
+        self.assertEqual(_sparse_static_work_outlier_keys(entries), expected)
+
+    def test_uniform_bright_color_accepts_adjusted_boundary(self) -> None:
+        base = {"mean_gray": 184.0, "median_gray": 206.0}
+        self.assertTrue(
+            _is_uniform_bright_color({**base, "bright_uniform_ratio": 0.7393})
+        )
+        self.assertFalse(
+            _is_uniform_bright_color({**base, "bright_uniform_ratio": 0.7199})
+        )
+
     def test_manifest_preserves_full_sea_analysis_and_encounter_segments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"
@@ -1077,6 +1122,251 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(result["protected_by_condition"]["position_outlier"], 1)
             self.assertEqual(result["protected_by_condition"]["size_outlier"], 1)
 
+    def test_position_outlier_removes_repeated_lower_roi_boundary_hotspot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            detect_roi = {"xyxy_px": [192, 0, 1088, 720]}
+            normal_frames = [
+                {
+                    "frame_index": index,
+                    "timestamp_sec": float(index),
+                    "detections": [
+                        {
+                            "class_name": "brailer",
+                            "confidence": 0.8,
+                            "bbox_xyxy": [700, 120, 760, 200],
+                        }
+                    ],
+                    "preview_path": f"frame_{index:06d}.jpg",
+                    "detect_roi": detect_roi,
+                }
+                for index in range(10, 110, 10)
+            ]
+            normal_frames.append(
+                {
+                    "frame_index": 120,
+                    "timestamp_sec": 120.0,
+                    "detections": [
+                        {
+                            "class_name": "brailer",
+                            "confidence": 0.52,
+                            "bbox_xyxy": [1044, 528, 1112, 578],
+                        }
+                    ],
+                    "preview_path": "frame_000120.jpg",
+                    "detect_roi": detect_roi,
+                }
+            )
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest={"fps": 1.0, "width": 1280, "height": 720, "frames": normal_frames},
+            )
+            for job_id, video_name in (
+                ("job2", "JJR-102283_stream04_260201_060016.mp4"),
+                ("job3", "JJR-102283_stream04_260201_080016.mp4"),
+            ):
+                merge_job_manifest(
+                    path,
+                    job_id=job_id,
+                    video_name=video_name,
+                    manifest={
+                        "fps": 1.0,
+                        "width": 1280,
+                        "height": 720,
+                        "frames": [
+                            {
+                                "frame_index": 10,
+                                "timestamp_sec": 10.0,
+                                "detections": [
+                                    {
+                                        "class_name": "brailer",
+                                        "confidence": 0.52,
+                                        "bbox_xyxy": [1046, 529, 1110, 577],
+                                    }
+                                ],
+                                "preview_path": "frame_000010.jpg",
+                                "detect_roi": detect_roi,
+                            }
+                        ],
+                    },
+                )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_position_outliers=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 3)
+            self.assertEqual(result["event_count"], 10)
+            self.assertEqual(result["removed_by_condition"]["position_outlier"], 3)
+            self.assertEqual(result["protected_by_condition"]["position_outlier"], 0)
+            self.assertEqual(result["postprocess"]["position_lower_roi_boundary_candidate_count"], 3)
+            self.assertEqual(result["postprocess"]["position_lower_roi_y_ratio"], 0.7)
+            self.assertEqual(result["postprocess"]["position_roi_edge_margin_ratio"], 0.02)
+            self.assertEqual(result["postprocess"]["position_roi_edge_min_video_count"], 3)
+
+    def test_position_outlier_removes_repeated_deep_lower_hotspot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            normal_frames = [
+                {
+                    "frame_index": index,
+                    "timestamp_sec": float(index),
+                    "detections": [
+                        {
+                            "class_name": "brailer",
+                            "confidence": 0.8,
+                            "bbox_xyxy": [700, 120, 760, 200],
+                        }
+                    ],
+                    "preview_path": f"frame_{index:06d}.jpg",
+                }
+                for index in range(10, 110, 10)
+            ]
+            normal_frames.append(
+                {
+                    "frame_index": 120,
+                    "timestamp_sec": 120.0,
+                    "detections": [
+                        {
+                            "class_name": "brailer",
+                            "confidence": 0.66,
+                            "bbox_xyxy": [590, 558, 650, 674],
+                        }
+                    ],
+                    "preview_path": "frame_000120.jpg",
+                }
+            )
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest={"fps": 1.0, "width": 1280, "height": 720, "frames": normal_frames},
+            )
+            for job_id, video_name, bbox in (
+                ("job2", "JJR-102283_stream04_260201_060016.mp4", [592, 560, 652, 676]),
+                ("job3", "JJR-102283_stream04_260201_080016.mp4", [588, 556, 648, 672]),
+            ):
+                merge_job_manifest(
+                    path,
+                    job_id=job_id,
+                    video_name=video_name,
+                    manifest={
+                        "fps": 1.0,
+                        "width": 1280,
+                        "height": 720,
+                        "frames": [
+                            {
+                                "frame_index": 10,
+                                "timestamp_sec": 10.0,
+                                "detections": [
+                                    {
+                                        "class_name": "brailer",
+                                        "confidence": 0.66,
+                                        "bbox_xyxy": bbox,
+                                    }
+                                ],
+                                "preview_path": "frame_000010.jpg",
+                            }
+                        ],
+                    },
+                )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_position_outliers=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 3)
+            self.assertEqual(result["event_count"], 10)
+            self.assertEqual(result["removed_by_condition"]["position_outlier"], 3)
+            self.assertEqual(result["protected_by_condition"]["position_outlier"], 0)
+            self.assertEqual(result["postprocess"]["position_lower_roi_boundary_candidate_count"], 0)
+            self.assertEqual(result["postprocess"]["position_deep_lower_candidate_count"], 3)
+            self.assertEqual(result["postprocess"]["position_deep_lower_y_ratio"], 0.8)
+
+    def test_position_outlier_preserves_lower_roi_boundary_without_three_videos(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            detect_roi = {"xyxy_px": [192, 0, 1088, 720]}
+            frames = [
+                {
+                    "frame_index": index,
+                    "timestamp_sec": float(index),
+                    "detections": [
+                        {
+                            "class_name": "brailer",
+                            "confidence": 0.8,
+                            "bbox_xyxy": [700, 120, 760, 200],
+                        }
+                    ],
+                    "preview_path": f"frame_{index:06d}.jpg",
+                    "detect_roi": detect_roi,
+                }
+                for index in range(10, 110, 10)
+            ]
+            frames.append(
+                {
+                    "frame_index": 120,
+                    "timestamp_sec": 120.0,
+                    "detections": [
+                        {
+                            "class_name": "brailer",
+                            "confidence": 0.52,
+                            "bbox_xyxy": [1044, 528, 1112, 578],
+                        }
+                    ],
+                    "preview_path": "frame_000120.jpg",
+                    "detect_roi": detect_roi,
+                }
+            )
+            merge_job_manifest(
+                path,
+                job_id="job1",
+                video_name="JJR-102283_stream04_260201_040016.mp4",
+                manifest={"fps": 1.0, "width": 1280, "height": 720, "frames": frames},
+            )
+            merge_job_manifest(
+                path,
+                job_id="job2",
+                video_name="JJR-102283_stream04_260201_060016.mp4",
+                manifest={
+                    "fps": 1.0,
+                    "width": 1280,
+                    "height": 720,
+                    "frames": [
+                        {
+                            "frame_index": 10,
+                            "timestamp_sec": 10.0,
+                            "detections": [
+                                {
+                                    "class_name": "brailer",
+                                    "confidence": 0.52,
+                                    "bbox_xyxy": [1046, 529, 1110, 577],
+                                }
+                            ],
+                            "preview_path": "frame_000010.jpg",
+                            "detect_roi": detect_roi,
+                        }
+                    ],
+                },
+            )
+
+            result = compact_timeline_segments(
+                path,
+                merge_segments=False,
+                remove_position_outliers=True,
+            )
+
+            self.assertEqual(result["removed_detection_count"], 0)
+            self.assertEqual(result["event_count"], 12)
+            self.assertEqual(result["postprocess"]["position_lower_roi_boundary_candidate_count"], 0)
+            self.assertEqual(result["protected_by_condition"]["position_outlier"], 1)
+
     def test_repeated_work_detection_is_protected_from_color_outlier(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "timeline.json"
@@ -1106,8 +1396,8 @@ class DetectTimelineTests(unittest.TestCase):
                 )
 
             with patch(
-                "brailer_monitor.detect_timeline._color_outlier_keys",
-                return_value={(0, 0), (1, 0)},
+                "brailer_monitor.detect_timeline._color_outlier_key_sets",
+                return_value=({(0, 0), (1, 0)}, set()),
             ):
                 result = compact_timeline_segments(
                     path,
@@ -1120,6 +1410,50 @@ class DetectTimelineTests(unittest.TestCase):
             self.assertEqual(result["event_count"], 2)
             self.assertEqual(result["protected_detection_count"], 2)
             self.assertEqual(result["protected_by_condition"]["color_outlier"], 2)
+
+    def test_uniform_bright_color_is_not_protected_as_repeated_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "timeline.json"
+            for job_id, video_name, bbox in (
+                ("job1", "JJR-102283_stream04_260201_040016.mp4", [100, 100, 140, 140]),
+                ("job2", "JJR-102283_stream04_260201_060016.mp4", [104, 102, 144, 142]),
+            ):
+                merge_job_manifest(
+                    path,
+                    job_id=job_id,
+                    video_name=video_name,
+                    manifest={
+                        "fps": 1.0,
+                        "total_frames": 100,
+                        "frames": [
+                            {
+                                "frame_index": 10,
+                                "timestamp_sec": 10.0,
+                                "detections": [
+                                    {"class_name": "brailer", "confidence": 0.8, "bbox_xyxy": bbox}
+                                ],
+                                "preview_path": "frame_000010.jpg",
+                            }
+                        ],
+                    },
+                )
+
+            bright_keys = {(0, 0), (1, 0)}
+            with patch(
+                "brailer_monitor.detect_timeline._color_outlier_key_sets",
+                return_value=(set(bright_keys), set(bright_keys)),
+            ):
+                result = compact_timeline_segments(
+                    path,
+                    merge_segments=False,
+                    remove_color_outliers=True,
+                    jobs_root=Path(tmp),
+                )
+
+            self.assertEqual(result["removed_detection_count"], 2)
+            self.assertEqual(result["event_count"], 0)
+            self.assertEqual(result["protected_by_condition"]["color_outlier"], 0)
+            self.assertEqual(result["postprocess"]["uniform_bright_color_candidate_count"], 2)
 
     def test_temporal_isolation_preserves_frames_merged_by_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
