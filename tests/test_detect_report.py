@@ -258,6 +258,12 @@ class DetectReportTests(unittest.TestCase):
                 remove_tall_thin_boxes=True,
                 remove_color_outliers=True,
             )
+            timeline_payload = json.loads(timeline.read_text(encoding="utf-8"))
+            timeline_payload["postprocess"]["remove_low_confidence"] = True
+            timeline_payload["postprocess"]["confidence_remove_at_or_below"] = 0.6
+            timeline_payload["postprocess"]["removed_detection_count"] = 1
+            timeline_payload["postprocess"]["removed_by_condition"]["confidence_threshold"] = 1
+            timeline.write_text(json.dumps(timeline_payload), encoding="utf-8")
 
             result = write_detection_report_bundle(timeline, root / "reports")
 
@@ -301,11 +307,12 @@ class DetectReportTests(unittest.TestCase):
             self.assertIn("바다 비율", html_text)
             self.assertIn("avg 35.0%", html_text)
             self.assertIn(
-                "후처리: 8초 이내 구간 병합, 크기 이상 제거, 하단 대형 바다 영역 제거, "
-                "세로형 빈 그물 제거, 색상 이상 제거",
+                "후처리: 8초 이내 구간 병합, Confidence 0.6 이하 제거, 크기 이상 제거, 하단 대형 바다 영역 제거, "
+                "세로형 빈 그물 제거, 균일한 밝은색/색상 이상 제거",
                 html_text,
             )
-            self.assertIn("탐지 0개 제거", html_text)
+            self.assertIn("탐지 1개 제거", html_text)
+            self.assertIn("Confidence≤0.6 1", html_text)
             self.assertIn("어두운 영상 건너뛰기: 전체 2개 중 1개 건너뜀", html_text)
             self.assertIn("Ctrl/Command+휠", html_text)
             self.assertIn("zoomLevels", html_text)

@@ -596,7 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
     detect_vid.add_argument("--out", default="output/detect")
     detect_vid.add_argument("--dataset-root", default="data/dataset")
     detect_vid.add_argument("--frame-stride", type=int, default=5)
-    detect_vid.add_argument("--confidence", type=float, default=0.6)
+    detect_vid.add_argument("--confidence", type=float, default=0.5)
     detect_vid.add_argument("--device", default=0)
     detect_vid.add_argument("--segmentation", choices=["auto", "yes", "no"], default="auto")
     detect_vid.add_argument("--sea-ratio", action="store_true", help="Calculate per-frame sea area ratio")

@@ -10,7 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, Callable
 
 from .video_time import absolute_frame_time, format_absolute_time, parse_video_start_time
 
@@ -31,6 +31,7 @@ POSITION_WORK_MIN_GROUP_SIZE = 10
 POSITION_LOWER_ROI_Y_RATIO = 0.70
 POSITION_ROI_EDGE_MARGIN_RATIO = 0.02
 POSITION_ROI_EDGE_MIN_VIDEO_COUNT = 3
+POSITION_DEEP_LOWER_Y_RATIO = 0.80
 STATIC_POSITION_MAX_GAP_SEC = 8.0
 STATIC_POSITION_MIN_DURATION_SEC = 3.0
 STATIC_POSITION_MIN_FRAMES = 6
@@ -40,9 +41,19 @@ STATIC_POSITION_STRICT_MIN_FRAMES = 3
 STATIC_POSITION_STRICT_MIN_DURATION_SEC = 0.5
 STATIC_POSITION_STRICT_MAX_CENTER_MOVE_PX = 2.0
 STATIC_POSITION_STRICT_MAX_SIZE_CHANGE_RATIO = 0.08
+STATIC_WORK_OUTLIER_MIN_DETECTIONS = 6
+STATIC_WORK_OUTLIER_MIN_VIDEO_COUNT = 3
+STATIC_WORK_OUTLIER_MIN_DURATION_SEC = 120.0
+STATIC_WORK_OUTLIER_MAX_CENTER_MOVE_PX = 5.0
+STATIC_WORK_OUTLIER_MAX_SIZE_CHANGE_RATIO = 0.10
 EDGE_DEFAULT_FRAME_WIDTH = 1280.0
 EDGE_CENTER_X_RATIO = 0.85
 EDGE_SIDE_X_RATIO = 0.985
+COLOR_BRIGHT_MEAN_GRAY_MIN = 170.0
+COLOR_BRIGHT_MEDIAN_GRAY_MIN = 190.0
+COLOR_BRIGHT_PIXEL_GRAY_MIN = 160.0
+COLOR_UNIFORM_LAB_DISTANCE_MAX = 35.0
+COLOR_BRIGHT_UNIFORM_RATIO_MIN = 0.72
 _VIDEO_SOURCE_SUFFIX_RE = re.compile(r"_\d{6}_\d{6}$")
 
 
@@ -557,8 +568,9 @@ def _is_lower_roi_boundary_detection(entry: dict[str, Any]) -> bool:
     )
 
 
-def _repeated_lower_roi_boundary_position_outlier_keys(
+def _repeated_work_position_outlier_keys(
     entries: list[dict[str, Any]],
+    predicate: Callable[[dict[str, Any]], bool],
 ) -> set[tuple[int, int]]:
     remove: set[tuple[int, int]] = set()
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -573,7 +585,7 @@ def _repeated_lower_roi_boundary_position_outlier_keys(
         candidates = [
             entry
             for entry in group
-            if entry["key"] in work_outliers and _is_lower_roi_boundary_detection(entry)
+            if entry["key"] in work_outliers and predicate(entry)
         ]
         for entry in candidates:
             matching_videos = {
@@ -585,6 +597,27 @@ def _repeated_lower_roi_boundary_position_outlier_keys(
             if len(matching_videos) >= POSITION_ROI_EDGE_MIN_VIDEO_COUNT:
                 remove.add(entry["key"])
     return remove
+
+
+def _repeated_lower_roi_boundary_position_outlier_keys(
+    entries: list[dict[str, Any]],
+) -> set[tuple[int, int]]:
+    return _repeated_work_position_outlier_keys(entries, _is_lower_roi_boundary_detection)
+
+
+def _is_deep_lower_detection(entry: dict[str, Any]) -> bool:
+    try:
+        frame_height = float(entry.get("frame_height") or 0.0)
+        center_y = float(entry["center"][1])
+    except (TypeError, ValueError):
+        return False
+    return frame_height > 0 and center_y >= frame_height * POSITION_DEEP_LOWER_Y_RATIO
+
+
+def _repeated_deep_lower_position_outlier_keys(
+    entries: list[dict[str, Any]],
+) -> set[tuple[int, int]]:
+    return _repeated_work_position_outlier_keys(entries, _is_deep_lower_detection)
 
 
 def _size_outlier_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
@@ -723,6 +756,62 @@ def _static_short_track_keys(entries: list[dict[str, Any]], videos: list[dict[st
             )
             if normal_static or strict_static:
                 remove.update(entry["key"] for entry in run)
+    return remove
+
+
+def _sparse_static_work_outlier_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
+    """Find sparse, fixed background detections that are also work-level position outliers."""
+    remove: set[tuple[int, int]] = set()
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        groups[entry["work_group"]].append(entry)
+
+    for group in groups.values():
+        work_outliers = _position_outlier_keys_for_group(
+            group,
+            min_group_size=POSITION_WORK_MIN_GROUP_SIZE,
+        )
+        candidates = [entry for entry in group if entry["key"] in work_outliers]
+        for seed in candidates:
+            seed_width = float(seed.get("width") or 0.0)
+            seed_height = float(seed.get("height") or 0.0)
+            if min(seed_width, seed_height) <= 0:
+                continue
+            matching: list[dict[str, Any]] = []
+            for other in candidates:
+                other_width = float(other.get("width") or 0.0)
+                other_height = float(other.get("height") or 0.0)
+                if min(other_width, other_height) <= 0:
+                    continue
+                center_distance = (
+                    (float(seed["center"][0]) - float(other["center"][0])) ** 2
+                    + (float(seed["center"][1]) - float(other["center"][1])) ** 2
+                ) ** 0.5
+                if center_distance > STATIC_WORK_OUTLIER_MAX_CENTER_MOVE_PX:
+                    continue
+                if abs(other_width / seed_width - 1.0) > STATIC_WORK_OUTLIER_MAX_SIZE_CHANGE_RATIO:
+                    continue
+                if abs(other_height / seed_height - 1.0) > STATIC_WORK_OUTLIER_MAX_SIZE_CHANGE_RATIO:
+                    continue
+                matching.append(other)
+
+            if len(matching) < STATIC_WORK_OUTLIER_MIN_DETECTIONS:
+                continue
+            video_names = {
+                str(entry["event"].get("video_name") or "")
+                for entry in matching
+            }
+            video_names.discard("")
+            if len(video_names) < STATIC_WORK_OUTLIER_MIN_VIDEO_COUNT:
+                continue
+            timestamps = [
+                float(entry["absolute_timestamp"])
+                for entry in matching
+                if entry.get("absolute_timestamp") is not None
+            ]
+            if not timestamps or max(timestamps) - min(timestamps) < STATIC_WORK_OUTLIER_MIN_DURATION_SEC:
+                continue
+            remove.update(entry["key"] for entry in matching)
     return remove
 
 
@@ -934,14 +1023,19 @@ def _crop_color_stats(video_path: Path, frame_index: int, bbox: list[float]) -> 
         return None
 
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    hue = hsv[:, :, 0].astype(np.float32)
     sat = hsv[:, :, 1].astype(np.float32)
-    val = hsv[:, :, 2].astype(np.float32)
-    vivid = (sat > 80) & (val > 80)
-    red = vivid & ((hue < 10) | (hue > 170))
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32)
+    median_lab = np.median(lab.reshape(-1, 3), axis=0)
+    lab_distance = np.linalg.norm(lab - median_lab, axis=2)
+    bright_uniform = (gray >= COLOR_BRIGHT_PIXEL_GRAY_MIN) & (
+        lab_distance <= COLOR_UNIFORM_LAB_DISTANCE_MAX
+    )
     mean_bgr = crop.reshape(-1, 3).mean(axis=0)
     return {
-        "red_ratio": float(red.mean()) if red.size else 0.0,
+        "mean_gray": float(gray.mean()) if gray.size else 0.0,
+        "median_gray": float(np.median(gray)) if gray.size else 0.0,
+        "bright_uniform_ratio": float(bright_uniform.mean()) if bright_uniform.size else 0.0,
         "mean_b": float(mean_bgr[0]),
         "mean_g": float(mean_bgr[1]),
         "mean_r": float(mean_bgr[2]),
@@ -949,9 +1043,20 @@ def _crop_color_stats(video_path: Path, frame_index: int, bbox: list[float]) -> 
     }
 
 
-def _color_outlier_keys(entries: list[dict[str, Any]], jobs_root: Path | None) -> set[tuple[int, int]]:
+def _is_uniform_bright_color(stats: dict[str, float]) -> bool:
+    return (
+        stats["mean_gray"] >= COLOR_BRIGHT_MEAN_GRAY_MIN
+        and stats["median_gray"] >= COLOR_BRIGHT_MEDIAN_GRAY_MIN
+        and stats["bright_uniform_ratio"] >= COLOR_BRIGHT_UNIFORM_RATIO_MIN
+    )
+
+
+def _color_outlier_key_sets(
+    entries: list[dict[str, Any]],
+    jobs_root: Path | None,
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
     if jobs_root is None:
-        return set()
+        return set(), set()
     stats_by_key: dict[tuple[int, int], dict[str, float]] = {}
     for entry in entries:
         job_id = entry.get("job_id") or ""
@@ -962,9 +1067,10 @@ def _color_outlier_keys(entries: list[dict[str, Any]], jobs_root: Path | None) -
         if stats is not None:
             stats_by_key[entry["key"]] = stats
 
-    remove: set[tuple[int, int]] = {
-        key for key, stats in stats_by_key.items() if stats["red_ratio"] >= 0.18
+    uniform_bright: set[tuple[int, int]] = {
+        key for key, stats in stats_by_key.items() if _is_uniform_bright_color(stats)
     }
+    remove = set(uniform_bright)
     for group in _group_entries(entries).values():
         group_stats = [(entry, stats_by_key.get(entry["key"])) for entry in group]
         group_stats = [(entry, stats) for entry, stats in group_stats if stats is not None]
@@ -981,6 +1087,11 @@ def _color_outlier_keys(entries: list[dict[str, Any]], jobs_root: Path | None) -
             ) ** 0.5
             if stats["mean_sat"] > 50 and distance > 70:
                 remove.add(entry["key"])
+    return remove, uniform_bright
+
+
+def _color_outlier_keys(entries: list[dict[str, Any]], jobs_root: Path | None) -> set[tuple[int, int]]:
+    remove, _uniform_bright = _color_outlier_key_sets(entries, jobs_root)
     return remove
 
 
@@ -1036,9 +1147,27 @@ def compact_timeline_segments(
         if remove_position_outliers
         else set()
     )
-    position_outlier_keys = (
-        _position_outlier_keys(entries) | repeated_lower_roi_boundary_keys
+    repeated_deep_lower_keys = (
+        _repeated_deep_lower_position_outlier_keys(entries)
         if remove_position_outliers
+        else set()
+    )
+    unprotected_position_outlier_keys = (
+        repeated_lower_roi_boundary_keys | repeated_deep_lower_keys
+    )
+    position_outlier_keys = (
+        _position_outlier_keys(entries) | unprotected_position_outlier_keys
+        if remove_position_outliers
+        else set()
+    )
+    color_outlier_keys, uniform_bright_color_keys = (
+        _color_outlier_key_sets(entries, jobs_root)
+        if remove_color_outliers
+        else (set(), set())
+    )
+    sparse_static_work_outlier_keys = (
+        _sparse_static_work_outlier_keys(entries)
+        if remove_static_short_tracks
         else set()
     )
     remove_by_condition: dict[str, int] = {}
@@ -1055,7 +1184,12 @@ def compact_timeline_segments(
         ("right_edge", remove_right_edge_detections, lambda: _right_edge_keys(entries)),
         ("size_outlier", remove_size_outliers, lambda: _size_outlier_keys(entries)),
         ("tall_thin_box", remove_tall_thin_boxes, lambda: _tall_thin_box_keys(entries)),
-        ("static_short_track", remove_static_short_tracks, lambda: _static_short_track_keys(entries, timeline.get("videos", []))),
+        (
+            "static_short_track",
+            remove_static_short_tracks,
+            lambda: _static_short_track_keys(entries, timeline.get("videos", []))
+            | sparse_static_work_outlier_keys,
+        ),
         (
             "temporal_isolated",
             remove_temporal_isolated,
@@ -1066,18 +1200,19 @@ def compact_timeline_segments(
                 protect_repeated_work=False,
             ),
         ),
-        ("color_outlier", remove_color_outliers, lambda: _color_outlier_keys(entries, jobs_root)),
+        ("color_outlier", remove_color_outliers, lambda: set(color_outlier_keys)),
     ):
         if not enabled:
             remove_by_condition[name] = 0
             protected_by_condition[name] = 0
             continue
         keys = finder()
-        protectable_keys = (
-            keys - repeated_lower_roi_boundary_keys
-            if name == "position_outlier"
-            else keys
-        )
+        if name == "position_outlier":
+            protectable_keys = keys - unprotected_position_outlier_keys
+        elif name == "color_outlier":
+            protectable_keys = keys - uniform_bright_color_keys
+        else:
+            protectable_keys = keys
         condition_protected = (
             protectable_keys & work_repeated_keys
             if name in WORK_REPEATED_PROTECTED_CONDITIONS
@@ -1105,6 +1240,8 @@ def compact_timeline_segments(
         "position_roi_edge_margin_ratio": POSITION_ROI_EDGE_MARGIN_RATIO,
         "position_roi_edge_min_video_count": POSITION_ROI_EDGE_MIN_VIDEO_COUNT,
         "position_lower_roi_boundary_candidate_count": len(repeated_lower_roi_boundary_keys),
+        "position_deep_lower_y_ratio": POSITION_DEEP_LOWER_Y_RATIO,
+        "position_deep_lower_candidate_count": len(repeated_deep_lower_keys),
         "remove_size_outliers": bool(remove_size_outliers),
         "remove_large_lower_sea_regions": bool(remove_large_lower_sea_regions),
         "large_lower_sea_min_group_size": LARGE_LOWER_SEA_MIN_GROUP_SIZE,
@@ -1129,6 +1266,12 @@ def compact_timeline_segments(
         "static_position_strict_min_duration_sec": STATIC_POSITION_STRICT_MIN_DURATION_SEC,
         "static_position_strict_max_center_move_px": STATIC_POSITION_STRICT_MAX_CENTER_MOVE_PX,
         "static_position_strict_max_size_change_ratio": STATIC_POSITION_STRICT_MAX_SIZE_CHANGE_RATIO,
+        "static_work_outlier_min_detections": STATIC_WORK_OUTLIER_MIN_DETECTIONS,
+        "static_work_outlier_min_video_count": STATIC_WORK_OUTLIER_MIN_VIDEO_COUNT,
+        "static_work_outlier_min_duration_sec": STATIC_WORK_OUTLIER_MIN_DURATION_SEC,
+        "static_work_outlier_max_center_move_px": STATIC_WORK_OUTLIER_MAX_CENTER_MOVE_PX,
+        "static_work_outlier_max_size_change_ratio": STATIC_WORK_OUTLIER_MAX_SIZE_CHANGE_RATIO,
+        "static_work_outlier_candidate_count": len(sparse_static_work_outlier_keys),
         "remove_temporal_isolated": bool(remove_temporal_isolated),
         "temporal_isolation_window_sec": TEMPORAL_ISOLATION_WINDOW_SEC,
         "temporal_short_burst_max_frames": TEMPORAL_SHORT_BURST_MAX_FRAMES,
@@ -1143,6 +1286,12 @@ def compact_timeline_segments(
         "temporal_isolation_protect_tail_sec": float(temporal_isolation_protect_tail_sec),
         "temporal_merge_protect_gap_sec": float(max_gap_sec) if merge_segments else 0.0,
         "remove_color_outliers": bool(remove_color_outliers),
+        "color_bright_mean_gray_min": COLOR_BRIGHT_MEAN_GRAY_MIN,
+        "color_bright_median_gray_min": COLOR_BRIGHT_MEDIAN_GRAY_MIN,
+        "color_bright_pixel_gray_min": COLOR_BRIGHT_PIXEL_GRAY_MIN,
+        "color_uniform_lab_distance_max": COLOR_UNIFORM_LAB_DISTANCE_MAX,
+        "color_bright_uniform_ratio_min": COLOR_BRIGHT_UNIFORM_RATIO_MIN,
+        "uniform_bright_color_candidate_count": len(uniform_bright_color_keys),
         "before_event_count": before_events,
         "removed_detection_count": removed_detections,
         "removed_event_count": removed_events,

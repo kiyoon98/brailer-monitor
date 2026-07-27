@@ -1,6 +1,6 @@
 {
-  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/win2_03032220.zip",
-  "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/JJR-102283_stream02_260303_222016.mp4",
+  "source_annotations": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/aurora_03140153.zip",
+  "source_video": "/home/koast/Documents/brailer-monitor/data/pipeline/_uploads/LAKE_AURORA_stream04_260314_015304.mp4",
   "frame_source": "video",
   "task_type": "segment",
   "class_names": [
@@ -17,26 +17,26 @@
         "name": "brailer",
         "color": "#7c6453",
         "cvat_type": "any",
-        "annotation_count": 0,
+        "annotation_count": 83,
         "box_count": 0,
-        "polygon_count": 0,
-        "frame_count": 0
+        "polygon_count": 83,
+        "frame_count": 83
       },
       {
         "name": "brailers",
         "color": "#796ad6",
         "cvat_type": "any",
-        "annotation_count": 515,
+        "annotation_count": 0,
         "box_count": 0,
-        "polygon_count": 515,
-        "frame_count": 515
+        "polygon_count": 0,
+        "frame_count": 0
       }
     ],
-    "total_annotations": 515,
-    "annotated_frames": 515,
+    "total_annotations": 83,
+    "annotated_frames": 83,
     "task_type": "segment"
   },
-  "train_images": 412,
-  "val_images": 103,
-  "total_annotations": 515
+  "train_images": 67,
+  "val_images": 16,
+  "total_annotations": 83
 }

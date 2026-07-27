@@ -474,6 +474,9 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
     if postprocess.get("merge_segments"):
         gap = float(postprocess.get("segment_merge_gap_sec") or 0.0)
         enabled.append(f"{gap:g}초 이내 구간 병합")
+    confidence_threshold = postprocess.get("confidence_remove_at_or_below")
+    if postprocess.get("remove_low_confidence") and confidence_threshold is not None:
+        enabled.append(f"Confidence {float(confidence_threshold):g} 이하 제거")
     if postprocess.get("remove_position_outliers"):
         enabled.append("위치 이상 제거")
     if postprocess.get("remove_size_outliers"):
@@ -493,7 +496,7 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         else:
             enabled.append("시간 고립/짧은 burst 제거")
     if postprocess.get("remove_color_outliers"):
-        enabled.append("색상 이상 제거")
+        enabled.append("균일한 밝은색/색상 이상 제거")
     label = ", ".join(enabled) if enabled else "선택된 후처리 없음"
     removed_by_condition = postprocess.get("removed_by_condition") or {}
     condition_labels = {
@@ -504,8 +507,10 @@ def _postprocess_summary_html(postprocess: dict[str, Any]) -> str:
         "right_edge": "좌우가장자리",
         "static_short_track": "정지",
         "temporal_isolated": "시간고립",
-        "color_outlier": "색상",
+        "color_outlier": "밝은색/색상",
     }
+    if confidence_threshold is not None:
+        condition_labels["confidence_threshold"] = f"Confidence≤{float(confidence_threshold):g}"
     removed_parts = [
         f"{label_name} {int(removed_by_condition.get(key) or 0)}"
         for key, label_name in condition_labels.items()

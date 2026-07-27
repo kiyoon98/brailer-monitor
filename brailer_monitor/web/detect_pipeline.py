@@ -40,7 +40,7 @@ from ..video_time import parse_video_start_time
 
 logger = logging.getLogger(__name__)
 SAVE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-DEFAULT_DETECTION_CONFIDENCE = 0.6
+DEFAULT_DETECTION_CONFIDENCE = 0.5
 EXCLUDED_DEFAULT_DETECTION_MODEL_NAMES = {"two_03032220"}
 
 
