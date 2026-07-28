@@ -10,6 +10,7 @@ from unittest.mock import patch
 from brailer_monitor.detect_timeline import (
     _is_uniform_bright_color,
     _sparse_static_work_outlier_keys,
+    _work_position_outlier_keys,
     build_segments,
     compact_timeline_segments,
     detection_area_px,
@@ -57,6 +58,7 @@ class DetectTimelineTests(unittest.TestCase):
             )
 
         self.assertEqual(_sparse_static_work_outlier_keys(entries), expected)
+        self.assertEqual(_work_position_outlier_keys(entries), expected)
 
     def test_uniform_bright_color_accepts_adjusted_boundary(self) -> None:
         base = {"mean_gray": 184.0, "median_gray": 206.0}

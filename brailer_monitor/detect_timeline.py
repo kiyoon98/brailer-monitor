@@ -520,6 +520,7 @@ def _position_outlier_keys_for_group(
     group: list[dict[str, Any]],
     *,
     min_group_size: int,
+    strict_work_threshold: bool = False,
 ) -> set[tuple[int, int]]:
     if len(group) < min_group_size:
         return set()
@@ -531,7 +532,10 @@ def _position_outlier_keys_for_group(
     med_dist = median(distances)
     mad = median([abs(distance - med_dist) for distance in distances])
     med_diag = median([entry["diag"] for entry in group])
-    threshold = med_dist + max(3.0 * mad, 1.5 * med_diag, 80.0)
+    if strict_work_threshold:
+        threshold = max(med_dist + 3.0 * mad, 1.5 * med_diag, 80.0)
+    else:
+        threshold = med_dist + max(3.0 * mad, 1.5 * med_diag, 80.0)
     return {
         entry["key"]
         for entry, distance in zip(group, distances)
@@ -543,6 +547,43 @@ def _position_outlier_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]
     remove: set[tuple[int, int]] = set()
     for group in _group_entries(entries).values():
         remove.update(_position_outlier_keys_for_group(group, min_group_size=5))
+    return remove
+
+
+def _work_position_outlier_keys(entries: list[dict[str, Any]]) -> set[tuple[int, int]]:
+    remove: set[tuple[int, int]] = set()
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        groups[entry["work_group"]].append(entry)
+    for group in groups.values():
+        remove.update(
+            _position_outlier_keys_for_group(
+                group,
+                min_group_size=POSITION_WORK_MIN_GROUP_SIZE,
+                strict_work_threshold=True,
+            )
+        )
+    return remove
+
+
+def _upper_right_work_position_outlier_keys(
+    entries: list[dict[str, Any]],
+    work_outlier_keys: set[tuple[int, int]],
+) -> set[tuple[int, int]]:
+    remove: set[tuple[int, int]] = set()
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        groups[entry["work_group"]].append(entry)
+    for group in groups.values():
+        median_x = median([float(entry["center"][0]) for entry in group])
+        median_y = median([float(entry["center"][1]) for entry in group])
+        remove.update(
+            entry["key"]
+            for entry in group
+            if entry["key"] in work_outlier_keys
+            and float(entry["center"][0]) > median_x
+            and float(entry["center"][1]) <= median_y
+        )
     return remove
 
 
@@ -571,6 +612,8 @@ def _is_lower_roi_boundary_detection(entry: dict[str, Any]) -> bool:
 def _repeated_work_position_outlier_keys(
     entries: list[dict[str, Any]],
     predicate: Callable[[dict[str, Any]], bool],
+    *,
+    strict_work_threshold: bool = False,
 ) -> set[tuple[int, int]]:
     remove: set[tuple[int, int]] = set()
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -581,6 +624,7 @@ def _repeated_work_position_outlier_keys(
         work_outliers = _position_outlier_keys_for_group(
             group,
             min_group_size=POSITION_WORK_MIN_GROUP_SIZE,
+            strict_work_threshold=strict_work_threshold,
         )
         candidates = [
             entry
@@ -1152,8 +1196,32 @@ def compact_timeline_segments(
         if remove_position_outliers
         else set()
     )
+    work_position_outlier_keys = (
+        _work_position_outlier_keys(entries)
+        if remove_position_outliers
+        else set()
+    )
+    repeated_work_position_outlier_keys = (
+        _repeated_work_position_outlier_keys(
+            entries,
+            lambda _entry: True,
+            strict_work_threshold=True,
+        )
+        if remove_position_outliers
+        else set()
+    )
+    upper_right_work_position_outlier_keys = (
+        _upper_right_work_position_outlier_keys(entries, work_position_outlier_keys)
+        if remove_position_outliers
+        else set()
+    )
+    unprotected_work_position_outlier_keys = (
+        repeated_work_position_outlier_keys | upper_right_work_position_outlier_keys
+    )
     unprotected_position_outlier_keys = (
-        repeated_lower_roi_boundary_keys | repeated_deep_lower_keys
+        repeated_lower_roi_boundary_keys
+        | repeated_deep_lower_keys
+        | unprotected_work_position_outlier_keys
     )
     position_outlier_keys = (
         _position_outlier_keys(entries) | unprotected_position_outlier_keys
@@ -1242,6 +1310,11 @@ def compact_timeline_segments(
         "position_lower_roi_boundary_candidate_count": len(repeated_lower_roi_boundary_keys),
         "position_deep_lower_y_ratio": POSITION_DEEP_LOWER_Y_RATIO,
         "position_deep_lower_candidate_count": len(repeated_deep_lower_keys),
+        "position_work_outlier_candidate_count": len(work_position_outlier_keys),
+        "position_repeated_work_outlier_candidate_count": len(repeated_work_position_outlier_keys),
+        "position_upper_right_work_outlier_candidate_count": len(upper_right_work_position_outlier_keys),
+        "position_unprotected_work_outlier_candidate_count": len(unprotected_work_position_outlier_keys),
+        "position_work_outlier_strict_threshold": True,
         "remove_size_outliers": bool(remove_size_outliers),
         "remove_large_lower_sea_regions": bool(remove_large_lower_sea_regions),
         "large_lower_sea_min_group_size": LARGE_LOWER_SEA_MIN_GROUP_SIZE,
