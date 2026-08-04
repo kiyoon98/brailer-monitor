@@ -1,5 +1,7 @@
 # Brailer Monitor
 
+Jetson/L4T R38용 Docker 배포는 [`docs/EDGE_DOCKER.md`](docs/EDGE_DOCKER.md)를 참고하세요.
+
 CVAT으로 라벨링한 브레일러/윈치 영상 데이터를 YOLO 학습 데이터셋으로 가져오고, 학습된 모델로 녹화 영상이나 실시간 HLS 스트림에서 객체를 탐지하는 웹 기반 파이프라인입니다.
 
 현재 기본 화면은 `http://localhost:8080`의 **YOLO 학습 → 비디오 탐지 → 탐지 타임라인 → CVAT Import** 흐름입니다.
@@ -142,7 +144,7 @@ Lake 저장소의 **저장소** 선택에서는 기존 `em_data` 구조와 `Carr
 공통 옵션:
 
 - `프레임 간격`: 몇 프레임마다 추론할지 지정
-- `Confidence`: 탐지 confidence threshold. 기본값은 `0.5`입니다.
+- `Confidence`: 탐지 confidence threshold. 기본값은 `0.6`입니다.
 - `추론 크기`: YOLO `imgsz`
 - `탐지 제외 여백(%)`: 화면 가장자리에서 제외할 비율. 기본값은 좌우 각각 `15`, 상하 `0`이며, 이 경우 좌우 `15~85%`, 상하 `0~100%` 영역의 탐지만 결과로 인정합니다.
 - `정밀 마스크(SAM)`: bbox 기반 추가 SAM mask 생성. 기본값은 켜짐입니다.
@@ -185,7 +187,7 @@ python -m brailer_monitor detect-video data/raw/video.mp4 \
   --model models/library/<model-id>/weights.pt \
   --out output/detect \
   --frame-stride 5 \
-  --confidence 0.5 \
+  --confidence 0.6 \
   --sea-ratio --sea-analysis-interval-sec 5 \
   --roi-top 0 --roi-right 0.15 --roi-bottom 0 --roi-left 0.15 \
   --segmentation auto

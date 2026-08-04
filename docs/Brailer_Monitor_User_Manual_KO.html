@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Brailer Monitor 프로그램 설명 및 사용자·운영 매뉴얼</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 18mm 17mm 18mm 17mm;
+    }
+    body {
+      font-family: "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", sans-serif;
+      color: #1f2933;
+      font-size: 10.5pt;
+      line-height: 1.55;
+      margin: 0;
+    }
+    h1, h2, h3, h4 {
+      color: #153a52;
+      page-break-after: avoid;
+    }
+    h1 {
+      font-size: 24pt;
+      margin: 0 0 10mm;
+    }
+    h2 {
+      font-size: 17pt;
+      border-bottom: 2px solid #168b73;
+      padding-bottom: 2mm;
+      margin: 0 0 5mm;
+    }
+    h3 {
+      font-size: 13pt;
+      margin: 7mm 0 2mm;
+    }
+    h4 {
+      font-size: 11pt;
+      margin: 5mm 0 1.5mm;
+    }
+    p {
+      margin: 0 0 3mm;
+    }
+    ul, ol {
+      margin: 1.5mm 0 3mm 6mm;
+      padding-left: 5mm;
+    }
+    li {
+      margin-bottom: 1.2mm;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 3mm 0 5mm;
+      page-break-inside: avoid;
+    }
+    th, td {
+      border: 1px solid #aebbc4;
+      padding: 2.2mm 2.5mm;
+      vertical-align: top;
+    }
+    th {
+      background: #e8f0f2;
+      color: #153a52;
+      font-weight: 700;
+      text-align: left;
+    }
+    code {
+      font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+      font-size: 9pt;
+      background: #f1f4f5;
+      padding: 0.2mm 0.8mm;
+    }
+    pre {
+      font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+      font-size: 8.5pt;
+      line-height: 1.4;
+      background: #f1f4f5;
+      color: #17232d;
+      border-left: 4px solid #19a486;
+      padding: 3.5mm;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 3mm 0 5mm;
+      page-break-inside: avoid;
+    }
+    .cover {
+      min-height: 247mm;
+      position: relative;
+      page-break-after: always;
+    }
+    .cover-band {
+      height: 13mm;
+      background: #168b73;
+      margin: -18mm -17mm 30mm;
+    }
+    .cover-kicker {
+      color: #168b73;
+      font-size: 13pt;
+      font-weight: 700;
+      margin-bottom: 6mm;
+    }
+    .cover-subtitle {
+      color: #506774;
+      font-size: 15pt;
+      max-width: 145mm;
+      margin-bottom: 16mm;
+    }
+    .cover-rule {
+      width: 38mm;
+      height: 2mm;
+      background: #153a52;
+      margin: 12mm 0;
+    }
+    .cover-meta {
+      width: 115mm;
+      margin-top: 28mm;
+    }
+    .cover-meta td {
+      border: 0;
+      border-bottom: 1px solid #d3dde2;
+      padding: 3mm 1mm;
+    }
+    .cover-footer {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      color: #6a7e89;
+      font-size: 9pt;
+    }
+    .page-break {
+      page-break-before: always;
+    }
+    .note, .warning, .tip {
+      padding: 3mm 4mm;
+      margin: 3mm 0 5mm;
+      border-left: 4px solid;
+      background: #f5f8f9;
+      page-break-inside: avoid;
+    }
+    .note {
+      border-color: #168b73;
+    }
+    .warning {
+      border-color: #d78718;
+      background: #fff8e9;
+    }
+    .tip {
+      border-color: #2e73a6;
+      background: #eef6fb;
+    }
+    .label {
+      display: inline-block;
+      font-size: 8.5pt;
+      font-weight: 700;
+      color: white;
+      background: #168b73;
+      padding: 0.5mm 2mm;
+      margin-right: 1.5mm;
+    }
+    .shot {
+      border: 2px dashed #6e8998;
+      background: #f7fafb;
+      margin: 5mm 0 7mm;
+      padding: 4mm;
+      page-break-before: always;
+      page-break-inside: avoid;
+    }
+    .shot-title {
+      font-size: 12pt;
+      font-weight: 700;
+      color: #153a52;
+      margin-bottom: 2mm;
+    }
+    .shot-space {
+      height: 38mm;
+      border: 1px solid #bdcbd2;
+      background: #ffffff;
+      color: #82939c;
+      text-align: center;
+      padding-top: 18mm;
+      margin-top: 3mm;
+      font-size: 11pt;
+      font-weight: 700;
+    }
+    .small {
+      font-size: 9pt;
+      color: #566d79;
+    }
+    .flow {
+      width: 88%;
+      margin: 4mm auto 6mm;
+      text-align: center;
+      page-break-inside: avoid;
+    }
+    .flow-box {
+      border: 1.5px solid #168b73;
+      background: #edf8f5;
+      padding: 3mm;
+      font-weight: 700;
+      color: #153a52;
+    }
+    .flow-arrow {
+      color: #168b73;
+      font-size: 16pt;
+      line-height: 1.1;
+    }
+    .toc td {
+      border: 0;
+      border-bottom: 1px dotted #aebbc4;
+      padding: 1.8mm 1mm;
+    }
+    .toc .num {
+      width: 13mm;
+      color: #168b73;
+      font-weight: 700;
+    }
+    .check {
+      font-family: "DejaVu Sans", sans-serif;
+    }
+    .muted {
+      color: #6a7e89;
+    }
+    .avoid-break {
+      page-break-inside: avoid;
+    }
+  </style>
+</head>
+<body>
+
+  <section class="cover">
+    <div class="cover-band"></div>
+    <div class="cover-kicker">BRAILER MONITOR</div>
+    <h1>프로그램 설명 및<br>사용자·운영 매뉴얼</h1>
+    <div class="cover-rule"></div>
+    <p class="cover-subtitle">
+      CVAT 주석 데이터 준비, YOLO 학습, 외부 모델 등록, 멀티모델 앙상블 탐지,
+      파일·저장소·실시간 스트림 처리, 후처리 및 리포트 생성
+    </p>
+    <table class="cover-meta">
+      <tr><td><b>문서 버전</b></td><td>1.0</td></tr>
+      <tr><td><b>기준 프로그램</b></td><td>Brailer Monitor 현재 저장소 구현</td></tr>
+      <tr><td><b>작성일</b></td><td>2026-07-28</td></tr>
+      <tr><td><b>대상 독자</b></td><td>운영자, 데이터 라벨러, 모델 학습 담당자, 시스템 관리자</td></tr>
+    </table>
+    <p class="cover-footer">
+      문서 안의 <b>[스크린샷 자리 S-xx]</b> 상자는 실제 운영 화면 이미지로 교체할 수 있습니다.
+    </p>
+  </section>
+
+  <section class="page-break">
+    <h2 style="page-break-before: always;">문서 사용 안내</h2>
+    <div class="note">
+      <b>스크린샷 삽입 방법</b><br>
+      Word에서 <b>[스크린샷 자리 S-xx]</b> 상자와 안내 문구를 선택해 삭제한 뒤,
+      같은 위치에 <b>삽입 → 그림</b>으로 해당 파일을 넣습니다. 원본 비율을 유지하고,
+      본문 너비를 넘지 않도록 가로 약 15~17cm로 맞추는 것을 권장합니다.
+    </div>
+    <p>
+      이 문서는 현재 코드와 웹 인터페이스를 기준으로 작성했습니다. 화면의 기본값과 후처리 수치는
+      이후 코드 변경에 따라 달라질 수 있으므로, 배포 버전이 바뀌면
+      <code>README.md</code>, <code>brailer_monitor/web/static/detect.html</code>,
+      <code>brailer_monitor/detect_timeline.py</code>도 함께 확인합니다.
+    </p>
+    <div class="warning">
+      <b>중요한 용어 구분</b><br>
+      CVAT은 영상에 객체의 위치와 클래스를 기록하는 <b>주석(annotation) 도구</b>입니다.
+      CVAT에서 만든 것은 일반적으로 “학습 데이터”이지 학습이 끝난 YOLO 모델이 아닙니다.
+      학습된 모델은 Ultralytics YOLO 학습 결과인 <code>best.pt</code> 같은 가중치 파일입니다.
+    </div>
+
+    <h3>목차</h3>
+    <table class="toc">
+      <tr><td class="num">1</td><td>프로그램 개요</td></tr>
+      <tr><td class="num">2</td><td>전체 업무 프로세스</td></tr>
+      <tr><td class="num">3</td><td>설치 환경과 서버 실행</td></tr>
+      <tr><td class="num">4</td><td>CVAT 주석 데이터 준비</td></tr>
+      <tr><td class="num">5</td><td>CVAT 데이터 Import</td></tr>
+      <tr><td class="num">6</td><td>YOLO 모델 학습과 모델 라이브러리</td></tr>
+      <tr><td class="num">7</td><td>외부에서 학습한 YOLO 모델 넣기</td></tr>
+      <tr><td class="num">8</td><td>멀티모델 앙상블</td></tr>
+      <tr><td class="num">9</td><td>소스별 비디오 탐지</td></tr>
+      <tr><td class="num">10</td><td>탐지 옵션과 진행 모니터링</td></tr>
+      <tr><td class="num">11</td><td>탐지 타임라인과 프레임 검토</td></tr>
+      <tr><td class="num">12</td><td>후처리</td></tr>
+      <tr><td class="num">13</td><td>결과 저장·불러오기와 외부 리포트</td></tr>
+      <tr><td class="num">14</td><td>실제 리포트 예시</td></tr>
+      <tr><td class="num">15</td><td>운영, 데이터 경로, 문제 해결</td></tr>
+      <tr><td class="num">A</td><td>CLI 빠른 참조</td></tr>
+      <tr><td class="num">B</td><td>스크린샷 촬영 목록</td></tr>
+      <tr><td class="num">C</td><td>운영 체크리스트</td></tr>
+    </table>
+  </section>
+
+  <section class="page-break">
+    <h2>1. 프로그램 개요</h2>
+    <p>
+      Brailer Monitor는 조업 영상에서 그물 또는 브레일러(<code>brailer</code>) 객체를 찾아
+      시간순으로 정리하고, 오탐을 후처리한 뒤 HTML·CSV·JSON 리포트로 내보내는 프로그램입니다.
+      모델 학습부터 운영 탐지까지 웹 화면 한 곳에서 수행하도록 구성되어 있습니다.
+    </p>
+
+    <h3>1.1 주요 기능</h3>
+    <table>
+      <tr><th>영역</th><th>기능</th></tr>
+      <tr><td>데이터 준비</td><td>CVAT for video 1.1 ZIP 또는 <code>annotations.xml</code> Import, 원본 영상 프레임 추출, train/val 분리</td></tr>
+      <tr><td>모델 학습</td><td>YOLO detection 또는 segmentation 학습, epoch/batch/imgsz 설정, 학습 중지 및 모델 라이브러리 등록</td></tr>
+      <tr><td>모델 관리</td><td>학습 모델 목록, 사용 모델 선택, 다중 모델 선택, 프레임 미리보기, 이름 변경, 삭제</td></tr>
+      <tr><td>탐지 소스</td><td>로컬 영상 파일, Lake HTTP 저장소, 실시간 HLS/HTTP 스트림</td></tr>
+      <tr><td>탐지 보조</td><td>SAM 정밀 마스크, 탐지 ROI, 어두운 영상 건너뛰기, 바다 영역 분석, 바다 영역만 분석</td></tr>
+      <tr><td>결과 검토</td><td>실시간 타임라인, 연속 구간, 대표·전체 탐지 프레임, 마스크 오버레이, 확대 프리뷰</td></tr>
+      <tr><td>후처리</td><td>8초 이내 구간 병합 및 위치·크기·형태·정지·시간 고립·색상 기반 오탐 제거</td></tr>
+      <tr><td>리포트</td><td>HTML 인터랙티브 타임라인, CSV 요약, JSON 전체 데이터, 생성 리포트 목록과 삭제</td></tr>
+    </table>
+
+    <h3>1.2 사용자 역할</h3>
+    <table>
+      <tr><th>역할</th><th>주요 책임</th></tr>
+      <tr><td>데이터 라벨러</td><td>CVAT label 이름과 box/polygon 품질을 일관되게 유지하고 빈 label을 정리합니다.</td></tr>
+      <tr><td>모델 담당자</td><td>데이터 Import, train/val 확인, 학습 파라미터 선택, 모델 품질 비교 및 라이브러리 관리</td></tr>
+      <tr><td>탐지 운영자</td><td>소스·기간·모델·ROI·confidence를 선택하고 진행률과 결과를 검토합니다.</td></tr>
+      <tr><td>결과 검토자</td><td>후처리 전 원본 결과를 보관하고 제거 통계를 확인한 뒤 리포트를 생성합니다.</td></tr>
+      <tr><td>시스템 관리자</td><td>Python/GPU/스토리지 접근, 서버 프로세스, 작업 디렉터리와 백업을 관리합니다.</td></tr>
+    </table>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-01] 전체 웹 화면</div>
+      <div><b>권장 파일명:</b> <code>S01_overview.png</code></div>
+      <div><b>촬영 범위:</b> 상단의 “YOLO 학습”부터 “비디오 탐지” 시작 부분까지. 프로그램의 전체 구성과 섹션 순서가 보이도록 캡처합니다.</div>
+      <div class="shot-space">여기에 실제 전체 화면 스크린샷 삽입</div>
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>2. 전체 업무 프로세스</h2>
+
+    <h3>2.1 모델을 새로 만드는 과정</h3>
+    <div class="flow">
+      <div class="flow-box">1. 원본 영상 수집 및 학습 대상 구간 선정</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">2. CVAT에서 label 생성 및 box/polygon 주석</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">3. CVAT for video 1.1 ZIP 또는 annotations.xml Export</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">4. Brailer Monitor의 CVAT 데이터 Import</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">5. train/val 프레임과 label 검수</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">6. YOLO 학습 → best.pt 생성 → 모델 라이브러리 자동 등록</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">7. 모델 프레임·클래스·실제 영상 탐지 품질 확인</div>
+    </div>
+
+    <h3>2.2 실제 영상을 탐지하는 과정</h3>
+    <div class="flow">
+      <div class="flow-box">1. 모델 라이브러리에서 한 개 이상의 “탐지” 모델 선택</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">2. 파일 / Lake 저장소 / 실시간 스트림 중 소스 선택</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">3. Confidence, 추론 크기, 프레임 간격, ROI, SAM 등 설정</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">4. 각 선택 모델이 독립 추론 → 같은 클래스·겹친 결과를 앙상블 병합</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">5. 탐지 프레임 저장, 진행률·타임라인·스트림 오버레이 갱신</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">6. 원본 결과 저장 → 후처리 적용 → 프레임 검토</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box">7. HTML / CSV / JSON 외부 리포트 생성 및 보관</div>
+    </div>
+
+    <h3>2.3 내부 처리 구조</h3>
+    <table>
+      <tr><th>단계</th><th>내부 동작</th><th>주요 산출물</th></tr>
+      <tr><td>웹 요청</td><td>FastAPI 웹 서버가 설정과 작업 목록을 검증하고 작업 큐를 생성합니다.</td><td>작업 상태</td></tr>
+      <tr><td>영상 단위 작업</td><td>각 영상은 <code>detect_worker.py</code> 하위 프로세스에서 처리됩니다. GPU 오류가 나더라도 웹 서버와 다음 작업을 최대한 분리하기 위한 구조입니다.</td><td><code>progress.json</code>, <code>worker.log</code></td></tr>
+      <tr><td>프레임 처리</td><td>선택된 프레임마다 모델별 YOLO 추론, 앙상블, ROI 판정, 선택 시 SAM/바다 영역 분석을 수행합니다.</td><td><code>detections.json</code>, previews</td></tr>
+      <tr><td>타임라인</td><td>탐지가 발생할 때마다 이벤트를 누적하고 연속 구간과 대표 프레임을 계산합니다.</td><td><code>detect_timeline.json</code></td></tr>
+      <tr><td>후처리</td><td>선택 조건을 전체 결과에 적용해 제거·보호·병합 통계를 기록합니다.</td><td>수정된 타임라인, postprocess 메타데이터</td></tr>
+      <tr><td>리포트</td><td>현재 열려 있는 타임라인을 고정된 HTML·CSV·JSON 파일로 생성합니다.</td><td><code>data/pipeline/reports/</code></td></tr>
+    </table>
+  </section>
+
+  <section class="page-break">
+    <h2>3. 설치 환경과 서버 실행</h2>
+
+    <h3>3.1 기본 요구 사항</h3>
+    <ul>
+      <li>Linux 운영체제와 Python 가상환경 <code>.venv</code></li>
+      <li>FFmpeg/OpenCV가 읽을 수 있는 영상 및 HLS 스트림</li>
+      <li>Ultralytics YOLO와 PyTorch. NVIDIA GPU를 사용하려면 CUDA 호환 버전 필요</li>
+      <li>저장소 소스를 사용할 경우 <code>10.2.10.158:8041</code> 서버 접근 권한</li>
+      <li>웹 UI의 HLS 프리뷰를 위한 최신 브라우저</li>
+    </ul>
+
+    <h3>3.2 웹 서버 시작</h3>
+    <pre>cd /home/koast/Documents/brailer-monitor
+source .venv/bin/activate
+python -m brailer_monitor web --port 8080</pre>
+    <p>브라우저에서 <code>http://localhost:8080</code>을 엽니다. 외부 PC에서 접속할 때는 방화벽과 바인딩 주소를 확인합니다.</p>
+
+    <h3>3.3 개발 모드</h3>
+    <pre>python -m brailer_monitor web --host 0.0.0.0 --port 8080 --reload</pre>
+    <div class="warning">
+      <b>운영 중 서버 재시작 주의</b><br>
+      탐지나 학습 중 서버를 종료하면 작업이 중단될 수 있습니다. 작업 중지 버튼을 먼저 누르고 상태가 종료됨으로 바뀐 뒤 재시작합니다.
+      작업 종료 코드 <code>-15</code>는 일반적으로 SIGTERM으로 종료되었다는 뜻이며, 사용자가 중지했거나 서버 재시작 과정에서 발생할 수 있습니다.
+    </div>
+
+    <h3>3.4 정상 동작 확인</h3>
+    <ol>
+      <li>웹 화면이 열리는지 확인합니다.</li>
+      <li>모델 라이브러리에서 모델 목록이 표시되는지 확인합니다.</li>
+      <li>짧은 영상 한 개로 탐지 시작 후 진행률과 현재 프레임이 움직이는지 확인합니다.</li>
+      <li>탐지 완료 후 모델 선택 변경과 결과 초기화 버튼이 정상 동작하는지 확인합니다.</li>
+    </ol>
+  </section>
+
+  <section class="page-break">
+    <h2>4. CVAT 주석 데이터 준비</h2>
+
+    <h3>4.1 CVAT에서 프로젝트 만들기</h3>
+    <ol>
+      <li>CVAT에서 Task를 만들고 원본 영상을 업로드합니다.</li>
+      <li>Label을 생성합니다. CVAT의 <b>label 하나가 YOLO의 class 하나</b>에 해당합니다.</li>
+      <li>현재 운영 대상이라면 label 이름을 <code>brailer</code>로 통일하는 것을 권장합니다.</li>
+      <li>Detection 모델은 Rectangle(Box), Segmentation 모델은 Polygon으로 객체를 표시합니다.</li>
+      <li>작업 완료 후 빈 label, 잘못된 클래스, 화면 밖 좌표, 중복 도형을 검수합니다.</li>
+    </ol>
+
+    <h3>4.2 Box와 Polygon의 차이</h3>
+    <table>
+      <tr><th>주석 종류</th><th>학습 작업</th><th>장점</th><th>주의점</th></tr>
+      <tr><td>Rectangle / Box</td><td>YOLO detection</td><td>주석이 빠르고 bbox 탐지에 적합</td><td>객체 내부의 정확한 모양은 학습하지 않음</td></tr>
+      <tr><td>Polygon</td><td>YOLO segmentation</td><td>객체 외곽 마스크와 면적·형태를 사용할 수 있음</td><td>주석 시간이 길고, 외곽점 품질이 중요</td></tr>
+    </table>
+    <p>
+      Polygon 점이 많다고 무조건 정확해지는 것은 아닙니다. 실루엣의 굴곡을 설명할 만큼은 필요하지만,
+      불필요하게 촘촘하거나 흔들리는 점은 label noise가 됩니다. 객체의 실제 외곽을 일관되게 따라가고,
+      프레임마다 비슷한 기준으로 점을 찍는 것이 더 중요합니다.
+    </p>
+
+    <h3>4.3 Label 품질 원칙</h3>
+    <ul>
+      <li>같은 물체를 <code>brailer</code>, <code>brailers</code>, <code>net</code>처럼 여러 이름으로 나누지 않습니다.</li>
+      <li>객체가 보이지 않거나 판단할 수 없는 프레임에는 억지로 주석하지 않습니다.</li>
+      <li>빈 label 정의는 삭제합니다. 좌표 없는 label 정의만 남는 것은 학습 정보가 아닙니다.</li>
+      <li>부분 가림, 야간, 날씨, 카메라별 샘플을 train/val에 고르게 포함합니다.</li>
+      <li>연속 프레임만 과도하게 넣지 말고 실제 운용 조건의 다양성을 확보합니다.</li>
+    </ul>
+
+    <h3>4.4 CVAT Export</h3>
+    <p>
+      권장 형식은 <b>CVAT for video 1.1</b>입니다. ZIP 안에 이미지가 없으면 원본 영상을 Brailer Monitor Import 시 함께 지정해야 합니다.
+      <code>annotations.xml</code>만 Export해도 사용할 수 있습니다.
+    </p>
+    <div class="tip">
+      CVAT에서 “YOLO” 형식으로 Export한 데이터셋도 표준 YOLO 디렉터리로 사용할 수는 있지만,
+      현재 웹 Import는 CVAT 1.1 ZIP/XML을 기준으로 프레임 추출, 메타데이터, 모델 프리뷰를 함께 구성합니다.
+      따라서 운영 절차에서는 CVAT 1.1 Import를 권장합니다.
+    </div>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-02] CVAT 주석과 Export 설정</div>
+      <div><b>권장 파일명:</b> <code>S02_cvat_annotation_export.png</code></div>
+      <div><b>촬영 범위:</b> <code>brailer</code> label과 polygon이 보이는 주석 화면, 또는 CVAT for video 1.1 Export 선택 화면</div>
+      <div class="shot-space">여기에 CVAT 실제 화면 스크린샷 삽입</div>
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>5. CVAT 데이터 Import</h2>
+
+    <h3>5.1 웹 Import 절차</h3>
+    <ol>
+      <li>웹 페이지 가장 아래의 <b>CVAT 데이터 Import</b> 섹션으로 이동합니다.</li>
+      <li>CVAT ZIP 또는 <code>annotations.xml</code> 파일을 선택합니다.</li>
+      <li>Export 파일에 원본 이미지가 없으면 원본 영상을 함께 선택합니다.</li>
+      <li>Import를 실행하고 “annotation 읽는 중” 메시지가 완료 상태로 바뀔 때까지 기다립니다.</li>
+      <li><b>Import된 프레임</b>에서 train/val 이미지와 주석 오버레이를 확인합니다.</li>
+    </ol>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-03] CVAT 데이터 Import</div>
+      <div><b>권장 파일명:</b> <code>S03_cvat_import.png</code></div>
+      <div><b>촬영 범위:</b> annotation 파일, 원본 영상 선택, Import 버튼과 완료 메시지가 모두 보이도록 캡처</div>
+      <div class="shot-space">여기에 Import 섹션 스크린샷 삽입</div>
+    </div>
+
+    <h3>5.2 Import 결과</h3>
+    <table>
+      <tr><th>경로</th><th>내용</th></tr>
+      <tr><td><code>data/dataset/images/train/</code></td><td>학습 이미지</td></tr>
+      <tr><td><code>data/dataset/images/val/</code></td><td>검증 이미지</td></tr>
+      <tr><td><code>data/dataset/labels/train/</code></td><td>YOLO 학습 label</td></tr>
+      <tr><td><code>data/dataset/labels/val/</code></td><td>YOLO 검증 label</td></tr>
+      <tr><td><code>data/dataset/import_meta.json</code></td><td>task type, 클래스, 원본 데이터, train/val 수 등 Import 메타데이터</td></tr>
+      <tr><td><code>config/dataset.yaml</code></td><td>Ultralytics 학습이 읽는 데이터셋 설정</td></tr>
+    </table>
+
+    <h3>5.3 train과 val</h3>
+    <p>
+      <b>train</b>은 모델의 가중치를 업데이트하는 데이터이고, <b>val</b>은 학습 중 보지 않은 데이터에 대해
+      성능을 확인하는 데이터입니다. val 결과가 좋지 않다면 epoch만 늘리기보다 데이터 분포, 주석 오류,
+      카메라·시간대 다양성을 먼저 점검합니다.
+    </p>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-04] Import된 프레임 검수</div>
+      <div><b>권장 파일명:</b> <code>S04_imported_frames.png</code></div>
+      <div><b>촬영 범위:</b> train/val 구분, 이미지 썸네일, box 또는 polygon 오버레이가 함께 보이는 화면</div>
+      <div class="shot-space">여기에 Import 프레임 스크린샷 삽입</div>
+    </div>
+
+    <h3>5.4 CLI Import</h3>
+    <pre>python -m brailer_monitor import-cvat annotations.xml \
+  --video source.mp4 \
+  --dataset-root data/dataset \
+  --val-ratio 0.2 \
+  --seed 42</pre>
+    <p>
+      기본 Import는 기존 데이터셋을 정리한 뒤 새 데이터를 구성합니다. 기존 데이터와 합쳐야 하는 특수한 경우에만
+      <code>--no-clean</code>을 사용하고, 동일 파일명과 클래스 번호 충돌을 직접 점검합니다.
+    </p>
+  </section>
+
+  <section class="page-break">
+    <h2>6. YOLO 모델 학습과 모델 라이브러리</h2>
+
+    <h3>6.1 웹 학습 절차</h3>
+    <ol>
+      <li>Import된 프레임과 클래스가 정상인지 확인합니다.</li>
+      <li><b>YOLO 학습</b>에서 Epochs, Batch, 학습 크기를 설정합니다.</li>
+      <li>GPU를 사용할 경우 device가 올바른지 확인하고 <b>학습 시작</b>을 누릅니다.</li>
+      <li>epoch와 batch 진행률을 확인합니다. 학습 완료 전 서버를 재시작하지 않습니다.</li>
+      <li>완료된 <code>best.pt</code>는 모델 라이브러리에 자동 등록됩니다.</li>
+      <li>모델 프레임과 실제 영상 테스트로 품질을 확인합니다.</li>
+    </ol>
+
+    <h3>6.2 작업 유형과 기본 모델</h3>
+    <table>
+      <tr><th>Import 결과</th><th>학습 유형</th><th>기본 사전학습 모델</th><th>대표 출력</th></tr>
+      <tr><td>Box 중심</td><td>detect</td><td><code>yolo11n.pt</code></td><td><code>models/brailer_detect.pt</code></td></tr>
+      <tr><td>Polygon 포함</td><td>segment</td><td><code>yolo11n-seg.pt</code></td><td><code>models/brailer_seg.pt</code></td></tr>
+    </table>
+
+    <h3>6.3 주요 학습 파라미터</h3>
+    <table>
+      <tr><th>항목</th><th>현재 웹 기본값</th><th>의미와 영향</th></tr>
+      <tr><td>Epochs</td><td>50</td><td>전체 train 데이터셋을 반복해서 학습하는 횟수입니다. 너무 적으면 미학습, 너무 많으면 과적합 가능성이 있습니다. Early stopping patience는 현재 20입니다.</td></tr>
+      <tr><td>Batch</td><td>4</td><td>한 번에 GPU로 처리하는 이미지 수입니다. 크면 처리 효율과 gradient 안정성이 좋아질 수 있지만 GPU 메모리를 더 사용합니다. OOM이면 줄입니다.</td></tr>
+      <tr><td>학습 크기</td><td>416</td><td>학습 입력 해상도입니다. 높이면 작은 객체에 유리할 수 있지만 속도와 메모리 비용이 커집니다.</td></tr>
+      <tr><td>Device</td><td>환경 설정값</td><td><code>0</code>은 첫 번째 CUDA GPU, <code>cpu</code>는 CPU입니다.</td></tr>
+    </table>
+
+    <div class="note">
+      <b>“학습 시작”과 “초기화 후 학습”</b><br>
+      일반 “학습 시작”도 기존 라이브러리 모델에 계속 이어 붙이는 방식이 아니라, Import task에 맞는 고정된
+      YOLO 사전학습 모델에서 새 학습을 시작합니다. “초기화 후 학습”은 현재 배포 가중치와 YOLO run 산출물을
+      먼저 정리하는 차이가 있습니다. 모델 라이브러리에 이미 등록된 모델은 별도로 삭제하지 않는 한 유지됩니다.
+    </div>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-05] 학습 설정과 진행률</div>
+      <div><b>권장 파일명:</b> <code>S05_training_progress.png</code></div>
+      <div><b>촬영 범위:</b> Epochs, Batch, 학습 크기, 시작/중지 버튼, 현재 epoch·batch 진행률</div>
+      <div class="shot-space">여기에 학습 화면 스크린샷 삽입</div>
+    </div>
+
+    <h3>6.4 모델 라이브러리</h3>
+    <p>
+      학습이 완료되면 <code>models/library/&lt;model-id&gt;/</code>에 가중치와 메타데이터가 복사됩니다.
+      모델 ID는 예를 들어 <code>260723-102200-05a3</code>처럼 생성되며, 표시 이름은 변경할 수 있습니다.
+    </p>
+    <table>
+      <tr><th>기능</th><th>설명</th></tr>
+      <tr><td>사용</td><td>단일 활성 모델을 지정하는 호환 기능입니다.</td></tr>
+      <tr><td>탐지 체크박스</td><td>실제 탐지에 사용할 모델을 한 개 이상 선택합니다.</td></tr>
+      <tr><td>프레임</td><td>해당 모델이 등록될 때 연결된 학습 데이터 프레임을 미리 봅니다.</td></tr>
+      <tr><td>이름 변경</td><td>표시 이름을 변경합니다. 가중치 자체의 학습 내용은 변하지 않습니다.</td></tr>
+      <tr><td>삭제</td><td>라이브러리 디렉터리와 모델을 삭제합니다. 사용 중인지 먼저 확인하고 백업합니다.</td></tr>
+      <tr><td>새로고침</td><td>디스크에 추가된 모델을 포함해 라이브러리 목록을 다시 읽습니다.</td></tr>
+    </table>
+
+    <div class="warning">
+      모델 프레임은 모델이 “기억하고 있는 좌표”를 뜻하지 않습니다. 학습 데이터셋에서 가져온 검토용 프리뷰입니다.
+      학습이 중단되었거나 외부 모델을 등록한 경우 프리뷰가 없을 수 있습니다.
+    </div>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-06] 모델 라이브러리와 다중 선택</div>
+      <div><b>권장 파일명:</b> <code>S06_model_library_multiselect.png</code></div>
+      <div><b>촬영 범위:</b> 모델 이름, task, 클래스, “탐지” 체크박스 여러 개, 프레임/이름 변경/삭제 버튼</div>
+      <div class="shot-space">여기에 모델 라이브러리 스크린샷 삽입</div>
+    </div>
+
+    <h3>6.5 CLI 학습</h3>
+    <pre>python -m brailer_monitor train \
+  --dataset config/dataset.yaml \
+  --epochs 50 \
+  --batch 4 \
+  --imgsz 416 \
+  --device 0</pre>
+  </section>
+
+  <section class="page-break">
+    <h2>7. 외부에서 학습한 YOLO 모델 넣기</h2>
+
+    <h3>7.1 지원 대상</h3>
+    <p>
+      Ultralytics YOLO가 읽을 수 있는 <code>.pt</code> 가중치를 모델 라이브러리에 등록할 수 있습니다.
+      외부 모델은 현재 웹 화면의 파일 업로드가 아니라 <code>ModelLibrary.register()</code>를 사용해 등록합니다.
+    </p>
+
+    <h3>7.2 등록 전 확인</h3>
+    <ul>
+      <li>현재 설치된 Ultralytics 버전에서 <code>YOLO("/path/to/best.pt")</code>가 열리는지 확인합니다.</li>
+      <li>모델 task가 <code>detect</code> 또는 <code>segment</code>인지 확인합니다.</li>
+      <li>클래스 이름에 <code>brailer</code>가 있는지 확인합니다.</li>
+      <li>외부 파일을 원본 위치에서 바로 참조하지 않고 라이브러리로 복사해 보관합니다.</li>
+    </ul>
+
+    <h3>7.3 등록 명령 예시</h3>
+    <pre>cd /home/koast/Documents/brailer-monitor
+source .venv/bin/activate
+
+python - &lt;&lt;'PY'
+from pathlib import Path
+from ultralytics import YOLO
+from brailer_monitor.model_library import ModelLibrary
+
+weights = Path("/path/to/best.pt").resolve()
+yolo = YOLO(str(weights))
+task = str(getattr(yolo, "task", None) or "detect")
+names = getattr(yolo, "names", {})
+class_names = (
+    [str(names[key]) for key in sorted(names)]
+    if isinstance(names, dict)
+    else [str(name) for name in names]
+)
+
+record = ModelLibrary(Path("models/library")).register(
+    weights,
+    task_type="segment" if task == "segment" else "detect",
+    name="external-model-name",
+    class_names=class_names,
+    source="external",
+)
+print(record.id, record.weights_path)
+PY</pre>
+    <p>등록 후 웹 화면에서 <b>모델 새로고침</b>을 누르고 모델과 클래스 이름을 확인합니다.</p>
+
+    <div class="warning">
+      <b>클래스 이름 변경 주의</b><br>
+      <code>meta.json</code>의 표시 문자열만 바꾸는 것은 모델이 학습한 클래스 의미를 바꾸지 않습니다.
+      가능한 한 CVAT 단계에서 <code>brailer</code>로 통일해 다시 학습하십시오.
+      현재 앙상블에서는 <code>brailer</code>와 <code>brailers</code>를 같은 클래스로 정규화하지만,
+      다른 클래스 이름은 별개 클래스로 처리됩니다.
+    </div>
+
+    <h3>7.4 외부 모델 프리뷰</h3>
+    <p>
+      외부 모델은 Brailer Monitor에서 학습한 데이터셋과 연결 정보가 없으므로
+      <code>previews/</code>가 비어 있을 수 있습니다. 이는 모델 가중치의 이상을 뜻하지 않습니다.
+      모델의 출처, 학습 데이터, 클래스, 성능 지표는 별도 기록으로 남기는 것을 권장합니다.
+    </p>
+  </section>
+
+  <section class="page-break">
+    <h2>8. 멀티모델 앙상블</h2>
+
+    <h3>8.1 사용하는 이유</h3>
+    <p>
+      카메라, 선박, 날씨, 시간대가 다른 데이터로 학습한 여러 모델을 함께 사용하면 한 모델이 놓친 객체를
+      다른 모델이 찾을 수 있습니다. 반대로 모든 모델이 같은 편향을 갖고 있으면 오탐도 함께 늘 수 있으므로
+      모델 조합은 실제 검증 영상으로 평가해야 합니다.
+    </p>
+
+    <h3>8.2 현재 앙상블 처리 방식</h3>
+    <ol>
+      <li>“탐지”로 선택된 각 모델이 같은 프레임을 <b>독립적으로 추론</b>합니다.</li>
+      <li>클래스 이름을 정규화합니다. <code>brailer</code>와 <code>brailers</code>는 같은 클래스로 봅니다.</li>
+      <li>같은 클래스의 bbox가 IoU 기준으로 충분히 겹치거나 한 bbox가 다른 bbox 안에 포함되면 같은 객체 후보로 묶습니다.</li>
+      <li>겹친 후보 중 대표 bbox/mask는 더 큰 bbox 후보를 기준으로 남깁니다.</li>
+      <li>Confidence는 후보 중 가장 높은 값을 사용합니다.</li>
+      <li>대표 모델과 기여한 모델 목록을 결과 label과 리포트 메타데이터에 기록합니다.</li>
+    </ol>
+
+    <h3>8.3 IoU란</h3>
+    <p>
+      IoU(Intersection over Union)는 두 bbox가 겹치는 면적을 두 bbox의 합집합 면적으로 나눈 값입니다.
+      0이면 전혀 겹치지 않고 1이면 완전히 같습니다. 현재 앙상블의 기본 겹침 기준은 약 0.5입니다.
+      IoU 병합은 클래스별로 수행되므로 서로 다른 클래스의 객체는 위치가 겹쳐도 자동으로 하나가 되지 않습니다.
+    </p>
+
+    <h3>8.4 모델 선택 지침</h3>
+    <table>
+      <tr><th>상황</th><th>권장 구성</th><th>주의점</th></tr>
+      <tr><td>단일 카메라·환경</td><td>해당 카메라 데이터로 검증된 모델 1~2개</td><td>불필요한 모델은 속도만 낮출 수 있음</td></tr>
+      <tr><td>여러 선박·시간대</td><td>환경별로 강점이 다른 모델 여러 개</td><td>오탐이 많은 모델은 제외</td></tr>
+      <tr><td>실시간 스트림</td><td>지연 목표에 맞춰 모델 수 최소화</td><td>모델 수에 비례해 추론 시간과 GPU 메모리 증가</td></tr>
+      <tr><td>정밀 사후 분석</td><td>검증된 모든 관련 모델 + SAM</td><td>처리 시간이 길어짐</td></tr>
+    </table>
+
+    <div class="note">
+      모델 수를 2배로 늘리면 실제 총 소요시간도 대체로 증가합니다. 프레임 간격을 키우거나 SAM을 끄는 방식으로
+      속도를 조절할 수 있지만, 짧게 나타나는 객체나 마스크 정밀도가 떨어질 수 있습니다.
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>9. 소스별 비디오 탐지</h2>
+
+    <h3>9.1 영상 파일</h3>
+    <ol>
+      <li><b>영상 파일</b> 소스를 선택합니다.</li>
+      <li>한 개 이상의 영상 파일을 선택합니다.</li>
+      <li>공통 탐지 옵션을 확인한 뒤 <b>탐지 시작</b>을 누릅니다.</li>
+      <li>여러 영상은 순서대로 처리되며 현재 영상 번호와 이름이 진행 상태에 표시됩니다.</li>
+    </ol>
+    <p>
+      파일 탐지는 재현이 쉽고 모델 비교에 적합합니다. 모델 또는 옵션을 바꿔 비교할 때는 같은 파일,
+      같은 frame stride, confidence, ROI를 사용합니다.
+    </p>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-07] 영상 파일 탐지 설정</div>
+      <div><b>권장 파일명:</b> <code>S07_detect_file.png</code></div>
+      <div><b>촬영 범위:</b> 소스 선택, 다중 파일 목록, 공통 탐지 옵션, 탐지 시작 버튼</div>
+      <div class="shot-space">여기에 파일 탐지 화면 스크린샷 삽입</div>
+    </div>
+
+    <h3>9.2 Lake 저장소</h3>
+    <p>
+      저장소 탐지는 기간과 저장소 profile을 바탕으로 5분 단위 영상 URL을 생성하고,
+      <b>영상 확인</b>으로 존재 여부를 확인한 뒤 순차 다운로드·탐지합니다.
+    </p>
+    <table>
+      <tr><th>Profile</th><th>기본 경로 구조</th><th>파일 시작 분/초 예</th></tr>
+      <tr>
+        <td><code>em_data</code></td>
+        <td><code>.../media/em_data/{media}/{year_folder}/{MM}/{DD}/{HH}/</code></td>
+        <td>minute offset가 02이면 02, 07, 12, …, 57분. 초 suffix 기본 16</td>
+      </tr>
+      <tr>
+        <td><code>carrier_lake_aurora</code></td>
+        <td><code>.../media/em_data2/Carrier/LAKE_AURORA_20260204_20260514_decrypted/cam/{YYYY}/{MM}/{DD}/{HH}/</code></td>
+        <td>03, 08, 13, …, 58분. 초 suffix 04</td>
+      </tr>
+    </table>
+    <p>
+      <code>em_data</code> profile은 현재 <code>lake_win</code>, <code>lake_aurora</code>,
+      <code>lake_dream</code>, <code>seibu</code>, <code>pharostar</code> 같은 media와
+      선박·stream 조합을 설정할 수 있습니다. 실제 조합과 경로 규칙은
+      <code>config/lake_video.json</code>을 기준으로 합니다.
+    </p>
+
+    <ol>
+      <li>저장소 profile, media, year folder, 선박, camera stream을 선택합니다.</li>
+      <li>분 offset와 초 suffix를 확인합니다.</li>
+      <li>시작·종료 월/일/시간을 지정합니다.</li>
+      <li><b>영상 확인</b>을 눌러 발견된 영상 개수와 목록을 확인합니다.</li>
+      <li>범위가 맞으면 탐지를 시작합니다.</li>
+    </ol>
+
+    <div class="warning">
+      기간의 종료 시각과 저장소의 파일명 규칙을 정확히 확인합니다. 너무 넓은 범위를 한 번에 실행하면
+      다운로드와 후처리 데이터가 크게 늘어납니다. 먼저 1시간 범위로 URL 규칙을 검증하십시오.
+    </div>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-08] Lake 저장소 탐지</div>
+      <div><b>권장 파일명:</b> <code>S08_detect_lake_storage.png</code></div>
+      <div><b>촬영 범위:</b> profile, media, 선박, stream, minute offset, suffix, 기간, 영상 확인 결과</div>
+      <div class="shot-space">여기에 저장소 탐지 화면 스크린샷 삽입</div>
+    </div>
+
+    <h3>9.3 실시간 스트림</h3>
+    <ol>
+      <li><b>실시간 스트림</b> 소스를 선택합니다.</li>
+      <li>스트림 URL을 입력합니다. 기본값은 <code>http://127.0.0.1:8081/live_04.m3u8</code>입니다.</li>
+      <li>브라우저 프리뷰가 재생되는지 확인합니다.</li>
+      <li>탐지를 시작하면 작업자가 별도로 스트림을 읽고, 탐지 결과를 현재 영상 위에 오버레이합니다.</li>
+      <li>종료 시 <b>탐지 중지</b>를 누릅니다. 스트림은 길이가 고정되어 있지 않으므로 자동 100% 완료되지 않습니다.</li>
+    </ol>
+    <p>
+      브라우저 플레이어와 Python 탐지 작업자는 스트림을 각각 읽습니다. 스트림 소스가 리셋되면
+      HLS 플레이어와 작업자가 서로 다른 시점에 재연결될 수 있으므로, 오버레이 시각이 잠시 어긋날 수 있습니다.
+    </p>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-09] 실시간 스트림과 탐지 오버레이</div>
+      <div><b>권장 파일명:</b> <code>S09_stream_overlay.png</code></div>
+      <div><b>촬영 범위:</b> URL, 재생 영상, bbox·label·mask 오버레이, 탐지 시작/중지 상태</div>
+      <div class="shot-space">여기에 스트림 오버레이 스크린샷 삽입</div>
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>10. 탐지 옵션과 진행 모니터링</h2>
+
+    <h3>10.1 공통 탐지 옵션</h3>
+    <table>
+      <tr><th>옵션</th><th>현재 기본값</th><th>설명</th></tr>
+      <tr><td>프레임 간격</td><td>5</td><td>모든 프레임이 아니라 5번째 프레임마다 추론합니다. 값이 작을수록 놓침은 줄지만 느려집니다.</td></tr>
+      <tr><td>Confidence</td><td>0.5</td><td>모델 예측을 결과로 인정하는 최소 신뢰도입니다. 낮추면 recall과 오탐이 함께 증가할 수 있습니다.</td></tr>
+      <tr><td>추론 크기</td><td>416</td><td>YOLO 입력을 letterbox resize하는 크기입니다. 원본 영상 출력 크기를 바꾸는 설정이 아닙니다.</td></tr>
+      <tr><td>SAM 정밀 마스크</td><td>사용</td><td>YOLO 결과를 바탕으로 SAM 마스크를 추가 계산합니다. YOLO mask는 cyan, SAM mask는 yellow로 표시합니다.</td></tr>
+      <tr><td>어두운 영상 건너뛰기</td><td>사용</td><td>파일·저장소 영상의 대표 샘플을 사전 검사해 전체가 명확히 어두우면 YOLO 처리를 생략합니다.</td></tr>
+      <tr><td>바다 영역 분석</td><td>사용 안 함</td><td>선박 조우·이탈 판단을 위해 바다 비율과 상태를 계산합니다.</td></tr>
+      <tr><td>바다 영역만 분석</td><td>사용 안 함</td><td>YOLO 객체 탐지와 SAM을 실행하지 않고 바다 영역만 계산합니다.</td></tr>
+      <tr><td>바다 분석 간격</td><td>5초</td><td>0은 처리하는 모든 프레임, 최대 300초(5분)까지 지정할 수 있습니다.</td></tr>
+    </table>
+
+    <h3>10.2 탐지 영역(ROI)</h3>
+    <p>
+      현재 기본값은 <b>상 0%, 하 0%, 좌 15%, 우 15%</b>입니다. 즉 전체 높이는 사용하고,
+      수평 방향으로는 화면의 15~85% 안에 있는 탐지만 결과에 포함합니다.
+      카메라별로 그물 작업 위치가 다르면 먼저 짧은 범위에서 ROI를 조정합니다.
+    </p>
+    <div class="note">
+      ROI는 오탐이 자주 발생하는 가장자리 영역을 본탐지 단계에서 제외하기 위한 설정입니다.
+      리포트에는 실제 적용된 ROI가 <code>x 15-85%, y 0-100%</code> 같은 형식으로 기록됩니다.
+    </div>
+
+    <h3>10.3 바다 영역 분석</h3>
+    <p>
+      Hybrid 엔진은 semantic segmentation과 OpenCV 기반 형태·시간 정보를 조합합니다.
+      바다 비율뿐 아니라 <code>calibrating</code>, <code>open_sea</code>,
+      <code>encounter</code>, <code>departure</code>, <code>unknown</code> 상태를 기록할 수 있습니다.
+      GPU 객체 탐지와 충돌을 줄이기 위해 semantic 모델은 기본적으로 CPU에서 실행합니다.
+    </p>
+    <p>
+      PyTorch 또는 semantic 모델을 사용할 수 없으면 legacy 분석으로 내려갈 수 있으며,
+      색·텍스처 의존도가 높아져 날씨와 시간대 변화에 대한 정확도가 낮아질 수 있습니다.
+    </p>
+
+    <h3>10.4 진행 상태 확인</h3>
+    <ul>
+      <li>현재 영상 번호 / 전체 영상 수와 현재 영상 이름</li>
+      <li>처리한 프레임 수, 영상 내 진행률, 전체 진행률</li>
+      <li>현재 프레임 미리보기와 실시간 탐지 건수</li>
+      <li>바다 영역 분석 사용 시 현재 바다 비율 scale</li>
+      <li>탐지 타임라인의 신규 marker</li>
+    </ul>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-10] 탐지 옵션과 진행률</div>
+      <div><b>권장 파일명:</b> <code>S10_detection_progress.png</code></div>
+      <div><b>촬영 범위:</b> confidence, imgsz, SAM, dark skip, sea, ROI와 현재 영상/프레임 진행률 및 바다 scale</div>
+      <div class="shot-space">여기에 탐지 진행 화면 스크린샷 삽입</div>
+    </div>
+
+    <h3>10.5 프레임 처리 순서</h3>
+    <ol>
+      <li>frame stride에 해당하는 프레임 읽기</li>
+      <li>선택 모델별 YOLO 독립 추론</li>
+      <li>클래스별 겹침 후보 앙상블</li>
+      <li>Confidence와 ROI 조건 적용</li>
+      <li>선택 시 SAM 마스크 생성</li>
+      <li>설정된 간격이면 바다 영역 분석</li>
+      <li>탐지가 있으면 프리뷰 저장 및 타임라인 즉시 갱신</li>
+      <li>진행률과 현재 프레임 상태 저장</li>
+    </ol>
+  </section>
+
+  <section class="page-break">
+    <h2>11. 탐지 타임라인과 프레임 검토</h2>
+
+    <h3>11.1 타임라인 구성</h3>
+    <p>
+      탐지 결과는 시간순 연속 구간으로 표시됩니다. 상단 marker는 대표 프레임,
+      하단 marker는 전체 탐지 프레임이며 대표 프레임은 하단에서도 진한 녹색으로 구분됩니다.
+      marker를 클릭하면 새 창이 아니라 프리뷰 팝업이 열립니다.
+    </p>
+    <ul>
+      <li>확대/축소: 긴 작업 시간 안의 짧은 탐지를 자세히 확인</li>
+      <li>현재 보이는 시간 범위: 확대된 화면의 시작·종료 시간 표시</li>
+      <li>좌우 이동: 프리뷰의 이전/다음 탐지 프레임으로 이동</li>
+      <li>하이라이트: 현재 프리뷰 프레임을 전체 타임라인에서 강조</li>
+      <li>자동 스크롤: 하이라이트된 marker가 화면 밖이면 보이도록 타임라인 이동</li>
+    </ul>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-11] 탐지 타임라인</div>
+      <div><b>권장 파일명:</b> <code>S11_detection_timeline.png</code></div>
+      <div><b>촬영 범위:</b> 대표 프레임과 전체 탐지 프레임 marker, 시간 범위, 확대 컨트롤, 후처리 영역 일부</div>
+      <div class="shot-space">여기에 타임라인 스크린샷 삽입</div>
+    </div>
+
+    <h3>11.2 프리뷰 해석</h3>
+    <p>
+      프리뷰 제목에는 클래스, confidence, 연속 구간 내 프레임 번호, 절대 시각, 영상 파일명이 표시됩니다.
+      예: <code>brailer · 86.33% · 연속구간 프레임 1/2 · 2026-03-08 22:25:00</code>.
+      다중 모델 결과라면 대표 모델 또는 기여 모델 정보도 label에 포함될 수 있습니다.
+    </p>
+    <table>
+      <tr><th>표시</th><th>의미</th></tr>
+      <tr><td>bbox</td><td>YOLO가 찾은 객체의 사각 영역</td></tr>
+      <tr><td>Cyan mask</td><td>YOLO segmentation 모델의 원래 mask</td></tr>
+      <tr><td>Yellow mask</td><td>SAM으로 정밀 보정한 mask</td></tr>
+      <tr><td>Confidence</td><td>앙상블 후보 중 가장 높은 신뢰도</td></tr>
+      <tr><td>연속구간 프레임 n/N</td><td>현재 프레임이 해당 구간의 전체 N개 중 n번째임</td></tr>
+    </table>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-12] 탐지 프레임 프리뷰</div>
+      <div><b>권장 파일명:</b> <code>S12_preview_yolo_sam.png</code></div>
+      <div><b>촬영 범위:</b> bbox, cyan YOLO mask, yellow SAM mask, label, 프레임 번호, 좌우 이동 버튼</div>
+      <div class="shot-space">여기에 프레임 프리뷰 스크린샷 삽입</div>
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>12. 후처리</h2>
+
+    <h3>12.1 기본 원칙</h3>
+    <p>
+      후처리는 한 시간대 또는 반나절 동안 반복되는 실제 전재 작업의 탐지들이
+      대체로 비슷한 위치·크기·형태를 가진다는 가정으로 오탐을 줄입니다.
+      모든 후처리 옵션은 현재 UI에서 기본 선택되어 있습니다.
+    </p>
+    <div class="warning">
+      후처리는 현재 열려 있는 타임라인에서 탐지 프레임을 실제로 제거합니다.
+      먼저 <b>현재 결과 저장</b>으로 원본 결과를 별도 이름으로 보관한 뒤 후처리를 적용하십시오.
+      같은 저장 결과에 반복 적용하면 이미 제거된 결과를 자동 복원하지 못합니다.
+    </div>
+
+    <h3>12.2 병합 조건</h3>
+    <table>
+      <tr><th>조건</th><th>현재 기준</th><th>효과</th></tr>
+      <tr><td>연속 구간 병합</td><td>같은 클래스의 구간 사이가 8초 이내</td><td>중간 프레임에서 잠시 놓친 탐지를 하나의 작업 구간으로 표시합니다. 탐지 프레임을 새로 만들지는 않습니다.</td></tr>
+    </table>
+
+    <h3>12.3 제거 조건</h3>
+    <table>
+      <tr><th>조건</th><th>현재 핵심 기준</th><th>설명</th></tr>
+      <tr>
+        <td>위치 이상</td>
+        <td>동일 영상·클래스 또는 작업 시간대의 중심 위치 분포에서 robust outlier</td>
+        <td>중앙값 거리와 MAD, bbox 대각선 크기를 함께 사용합니다. 작업 단위는 최대 12시간 범위로 보며, 반복되는 정상 위치는 보호하되 하단 ROI 경계·깊은 하단·엄격한 작업 위치 이상은 보호하지 않을 수 있습니다.</td>
+      </tr>
+      <tr>
+        <td>크기 이상</td>
+        <td>동일 영상·클래스의 면적 중앙값 대비 50% 이하 또는 200% 이상</td>
+        <td>같은 영상의 일반 탐지보다 지나치게 작거나 큰 객체를 제거 후보로 만듭니다. 비교 대상이 3개 미만이면 적용하지 않습니다.</td>
+      </tr>
+      <tr>
+        <td>하단 대형 바다 영역</td>
+        <td>작업 내 10개 이상, 면적 4배 초과, bbox 하단 98% 이상, 중심 y 65% 이상</td>
+        <td>화면 아래 바다나 선체를 매우 큰 객체로 잘못 찾은 결과를 제거합니다.</td>
+      </tr>
+      <tr>
+        <td>세로로 긴 빈 그물</td>
+        <td>bbox의 width / height &lt; 0.5</td>
+        <td>폭이 높이의 절반보다 작은 세로형 bbox를 제거합니다.</td>
+      </tr>
+      <tr>
+        <td>같은 위치 정지</td>
+        <td>3초 이상 또는 6프레임 이상, 중심 이동이 작음</td>
+        <td>고정 구조물이나 배경을 반복 탐지한 결과를 제거합니다. 3프레임·0.5초 이상에서 중심 2px 이하, 크기 변화 8% 이하인 엄격 조건도 있습니다. 여러 영상에 걸친 장기 정지 오탐도 별도로 검사합니다.</td>
+      </tr>
+      <tr>
+        <td>시간적으로 고립</td>
+        <td>앞뒤 10초에 비슷한 크기의 탐지가 없음, 최대 3프레임·1초 이하 burst</td>
+        <td>짧고 주변 근거가 없는 탐지를 제거합니다. 8초 병합으로 한 구간이 된 탐지와 같은 작업 12시간 내 반복된 유사 탐지는 보호합니다. 현재 이 조건은 중심거리 차이를 요구하지 않습니다.</td>
+      </tr>
+      <tr>
+        <td>색상 이상 / 균일한 밝은색</td>
+        <td>평균 gray ≥170, 중앙값 ≥190, 밝고 균일한 픽셀 ≥72%, Lab 거리 ≤35</td>
+        <td>밝고 균일한 선체·구조물 오탐을 제거합니다. 그룹 내 5개 이상이면 평균 BGR 색이 크게 다르고 saturation이 높은 상대 색상 이상도 검사합니다.</td>
+      </tr>
+    </table>
+
+    <h3>12.4 반복 작업 보호</h3>
+    <p>
+      같은 source 계열과 클래스에서 최대 12시간 안에 크기와 형태가 유사하게 반복된 탐지는 정상 작업일 가능성이
+      높다고 보고 위치·크기·시간 고립·일반 색상 이상 제거에서 보호할 수 있습니다.
+      단, 다음과 같이 명백한 배경 오탐 성격이 강한 조건은 보호보다 제거가 우선할 수 있습니다.
+    </p>
+    <ul>
+      <li>균일한 밝은색 조건</li>
+      <li>하단의 지나치게 큰 바다 영역</li>
+      <li>하단 ROI 경계 또는 깊은 하단에서 반복되는 강한 위치 이상</li>
+      <li>오랜 시간 여러 영상에서 거의 같은 위치와 크기로 고정된 배경 탐지</li>
+    </ul>
+
+    <h3>12.5 적용 절차</h3>
+    <ol>
+      <li>후처리 전 현재 결과를 저장합니다. 예: <code>raw_20260314</code>.</li>
+      <li>원하는 조건을 선택합니다. 처음에는 기본 전체 선택을 사용합니다.</li>
+      <li><b>후처리 적용</b>을 누릅니다.</li>
+      <li>메시지에서 병합 구간 수, 제거 탐지 수, 제거 프레임 수를 확인합니다.</li>
+      <li>타임라인의 의심 구간과 정상 구간을 모두 샘플 검토합니다.</li>
+      <li>문제가 있으면 원본 저장 결과를 다시 불러와 조건을 줄여 재시도합니다.</li>
+    </ol>
+
+    <div class="note">
+      <b>“탐지 제거”와 “프레임 제거”의 차이</b><br>
+      한 프레임에는 여러 탐지가 있을 수 있습니다. “탐지 제거”는 bbox/mask 하나를 제거한 개수이고,
+      “프레임 제거”는 모든 탐지가 사라져 타임라인 이벤트 자체가 제거된 프레임 개수입니다.
+    </div>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-13] 후처리 옵션과 적용 결과</div>
+      <div><b>권장 파일명:</b> <code>S13_postprocess_result.png</code></div>
+      <div><b>촬영 범위:</b> 병합·제거 체크박스 전체와 적용 후 병합/제거 메시지</div>
+      <div class="shot-space">여기에 후처리 화면 스크린샷 삽입</div>
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>13. 결과 저장·불러오기와 외부 리포트</h2>
+
+    <h3>13.1 결과 저장과 불러오기</h3>
+    <ol>
+      <li>탐지가 끝나면 <b>현재 결과 저장</b>으로 이름을 지정해 저장합니다.</li>
+      <li>후처리 전 원본과 후처리 후 결과를 서로 다른 이름으로 저장합니다.</li>
+      <li>기존 결과를 선택하고 <b>불러오기</b>를 누르면 그 결과가 현재 타임라인이 됩니다.</li>
+      <li>리포트 생성 전에 화면의 소스, 구간 수, 대표 프레임이 의도한 저장 결과와 일치하는지 확인합니다.</li>
+    </ol>
+    <div class="warning">
+      리포트는 “목록에서 선택만 한 저장 결과”가 아니라 <b>현재 실제로 불러와 열려 있는 타임라인</b>을 기준으로 생성됩니다.
+      다른 결과가 열려 있으면 리포트 내용도 달라집니다.
+    </div>
+
+    <h3>13.2 리포트 형식</h3>
+    <table>
+      <tr><th>형식</th><th>용도</th><th>주요 내용</th></tr>
+      <tr><td>HTML</td><td>사람이 탐색·검토</td><td>요약, 인터랙티브 전체 타임라인, 확대 최대 20000%, 대표/전체 프레임 marker, 프리뷰 팝업</td></tr>
+      <tr><td>CSV</td><td>Excel 통계·분석</td><td>구간별 시작/종료, 클래스, confidence, 대표 프레임, bbox/mask 크기, 영상 이름</td></tr>
+      <tr><td>JSON</td><td>재처리·연동·감사</td><td>요약, 모델, 옵션, 후처리 메타데이터, 모든 구간과 타임라인 프레임</td></tr>
+    </table>
+
+    <h3>13.3 HTML 리포트 구성</h3>
+    <ul>
+      <li>소스 요약과 처리 영상 수</li>
+      <li>탐지에 사용한 모델 이름과 개수</li>
+      <li>Confidence와 탐지 ROI</li>
+      <li>어두운 영상 검사 사용 수와 건너뛴 영상 수</li>
+      <li>바다 영역 분석 요약과 조우/이탈 상태</li>
+      <li>적용 후처리 조건, 병합·제거·보호 통계</li>
+      <li>구간별 대표 프레임 썸네일과 상세 값</li>
+      <li>확대 가능한 전체 시간 타임라인과 팝업 프리뷰</li>
+    </ul>
+
+    <h3>13.4 리포트 생성과 삭제</h3>
+    <ol>
+      <li>현재 결과를 확인한 뒤 <b>외부 문서 생성</b>을 누릅니다.</li>
+      <li>리포트 목록을 새로고침합니다.</li>
+      <li>HTML/JSON/CSV 버튼으로 파일을 엽니다.</li>
+      <li>불필요한 리포트는 같은 행의 <b>Delete</b>로 세 형식을 함께 삭제합니다.</li>
+    </ol>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-14] 외부 리포트 목록</div>
+      <div><b>권장 파일명:</b> <code>S14_report_list.png</code></div>
+      <div><b>촬영 범위:</b> 생성 버튼, 리포트 파일명/생성일, HTML·JSON·CSV·Delete 버튼</div>
+      <div class="shot-space">여기에 리포트 목록 스크린샷 삽입</div>
+    </div>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-15] HTML 리포트 요약과 전체 타임라인</div>
+      <div><b>권장 파일명:</b> <code>S15_html_report_timeline.png</code></div>
+      <div><b>촬영 범위:</b> 소스·모델·confidence·후처리 요약과 확대 가능한 전체 타임라인</div>
+      <div class="shot-space">여기에 HTML 리포트 화면 스크린샷 삽입</div>
+    </div>
+
+    <div class="shot">
+      <div class="shot-title">[스크린샷 자리 S-16] HTML 리포트 프리뷰 팝업</div>
+      <div><b>권장 파일명:</b> <code>S16_html_report_preview.png</code></div>
+      <div><b>촬영 범위:</b> 대표 프레임 썸네일을 클릭한 팝업, 이전/다음 버튼, 현재 구간 프레임 번호</div>
+      <div class="shot-space">여기에 HTML 리포트 프리뷰 스크린샷 삽입</div>
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>14. 실제 리포트 예시</h2>
+    <p>
+      다음은 현재 저장된 <code>detection-report-20260727-130559</code>에서 가져온 실제 요약 예시입니다.
+      이 값은 프로그램 사용법을 설명하기 위한 예이며 모델 품질의 최종 평가 결과를 뜻하지 않습니다.
+    </p>
+
+    <h3>14.1 실행 요약 예시</h3>
+    <table>
+      <tr><th>항목</th><th>예시 값</th></tr>
+      <tr><td>생성 시각</td><td>2026-07-27 13:05:59 KST</td></tr>
+      <tr><td>소스</td><td><code>LAKE_AURORA_stream04_260313_230304.mp4</code> 외 587개 영상</td></tr>
+      <tr><td>처리 영상 수</td><td>588</td></tr>
+      <tr><td>사용 모델</td><td>7개: aurora_03140153, one-03032220, win_03031855, win_01280525, win_03080940, win_03102020, win_01282130</td></tr>
+      <tr><td>Confidence</td><td>0.6</td></tr>
+      <tr><td>탐지 ROI</td><td>x 15~85%, y 0~70%</td></tr>
+      <tr><td>어두운 영상 검사</td><td>588개 영상에서 사용, 0개 건너뜀</td></tr>
+      <tr><td>후처리 후 탐지 프레임</td><td>214</td></tr>
+      <tr><td>최종 연속 구간</td><td>17</td></tr>
+      <tr><td>클래스</td><td><code>brailer</code> 17구간</td></tr>
+      <tr><td>구간 길이</td><td>최소 1.0초 / 최대 6.0초 / 평균 4.529초</td></tr>
+    </table>
+
+    <h3>14.2 후처리 요약 예시</h3>
+    <table>
+      <tr><th>항목</th><th>예시 값</th></tr>
+      <tr><td>후처리 전 프레임 이벤트</td><td>4,978</td></tr>
+      <tr><td>제거된 탐지</td><td>4,771</td></tr>
+      <tr><td>모든 탐지가 제거된 프레임</td><td>4,764</td></tr>
+      <tr><td>위치 이상 제거</td><td>71</td></tr>
+      <tr><td>같은 위치 정지 제거</td><td>4,697</td></tr>
+      <tr><td>시간 고립 제거</td><td>1</td></tr>
+      <tr><td>색상 이상 제거</td><td>2</td></tr>
+      <tr><td>후처리 전 구간</td><td>1,072</td></tr>
+      <tr><td>제거 조건 적용 후 구간</td><td>40</td></tr>
+      <tr><td>8초 병합 후 최종 구간</td><td>17, 병합된 구간 23</td></tr>
+      <tr><td>반복 작업으로 최종 보호된 탐지</td><td>38</td></tr>
+    </table>
+
+    <h3>14.3 구간 한 건의 예시</h3>
+    <table>
+      <tr><th>필드</th><th>예시 값</th></tr>
+      <tr><td>시작 / 종료</td><td>2026-03-14 00:20:04 / 00:20:08</td></tr>
+      <tr><td>구간 길이</td><td>4.334초</td></tr>
+      <tr><td>탐지 프레임 수</td><td>13</td></tr>
+      <tr><td>클래스</td><td><code>brailer</code></td></tr>
+      <tr><td>최고 Confidence</td><td>96.53%</td></tr>
+      <tr><td>대표 시각</td><td>2026-03-14 00:20:06, 구간 내 5번째 프레임</td></tr>
+      <tr><td>대표 bbox</td><td>[599.2, 62.3, 683.1, 159.0]</td></tr>
+      <tr><td>대표 mask 면적</td><td>5,913 px</td></tr>
+      <tr><td>영상</td><td><code>LAKE_AURORA_stream04_260314_001804.mp4</code></td></tr>
+    </table>
+
+    <h3>14.4 예시 해석</h3>
+    <p>
+      이 리포트는 원본 4,978개 프레임 이벤트에서 고정 위치 오탐이 매우 많이 제거되었고,
+      8초 이내 구간 병합으로 40개 구간이 17개로 정리된 사례입니다.
+      제거 수가 많다는 사실만으로 후처리가 정확하다고 판단할 수는 없습니다.
+      삭제된 프레임 일부와 남은 구간 전체를 표본 검토해 정상 작업이 과도하게 삭제되지 않았는지 확인해야 합니다.
+    </p>
+  </section>
+
+  <section class="page-break">
+    <h2>15. 운영, 데이터 경로, 문제 해결</h2>
+
+    <h3>15.1 주요 데이터 경로</h3>
+    <table>
+      <tr><th>경로</th><th>내용</th><th>삭제 주의</th></tr>
+      <tr><td><code>data/dataset/</code></td><td>현재 학습용 train/val 데이터, Import 메타데이터</td><td>삭제하면 재학습과 프리뷰 연결에 영향</td></tr>
+      <tr><td><code>models/library/&lt;model-id&gt;/</code></td><td><code>weights.pt</code>, <code>meta.json</code>, previews</td><td>모델 라이브러리 삭제와 동일</td></tr>
+      <tr><td><code>data/pipeline/detect_jobs/</code></td><td>영상별 작업, 다운로드 영상, 탐지 manifest, 프리뷰, 로그</td><td>기존 프리뷰·색상 후처리·리포트 링크가 깨질 수 있음</td></tr>
+      <tr><td><code>data/pipeline/detect_timeline.json</code></td><td>현재 열려 있는 타임라인</td><td>작업 중 직접 편집 금지</td></tr>
+      <tr><td><code>data/pipeline/reports/</code></td><td>생성된 HTML·CSV·JSON 리포트</td><td>삭제 전 외부 보관 여부 확인</td></tr>
+      <tr><td><code>config/lake_video.json</code></td><td>저장소 profile, media, 선박, stream, URL 규칙</td><td>변경 후 영상 확인으로 검증</td></tr>
+    </table>
+
+    <h3>15.2 백업 권장 단위</h3>
+    <ul>
+      <li>검증 완료 모델: 모델 디렉터리 전체(<code>weights.pt</code>와 <code>meta.json</code> 포함)</li>
+      <li>학습 재현 데이터: CVAT 원본 Export, 원본 영상, <code>dataset.yaml</code></li>
+      <li>운영 결과: 후처리 전·후 저장 결과, HTML·CSV·JSON 세 파일</li>
+      <li>설정: <code>config/</code>와 사용한 소스·모델·confidence·ROI 기록</li>
+    </ul>
+
+    <h3>15.3 자주 발생하는 문제</h3>
+    <table>
+      <tr><th>증상</th><th>확인 사항과 조치</th></tr>
+      <tr>
+        <td>첫 번째 영상 이후 진행되지 않음</td>
+        <td>현재 영상의 <code>worker.log</code>, <code>progress.json</code>, 작업자 프로세스를 확인합니다. 손상 영상, 네트워크 다운로드 대기, GPU 오류가 원인일 수 있습니다.</td>
+      </tr>
+      <tr>
+        <td>진행 scale이 움직이지 않음</td>
+        <td>현재 작업 상태와 작업자 생존 여부를 확인합니다. 첫 모델 로딩, SAM 초기화, 저장소 다운로드 중에는 프레임 진행 전 대기할 수 있습니다.</td>
+      </tr>
+      <tr>
+        <td>학습이 epoch 1에서 멈춘 것처럼 보임</td>
+        <td>batch 진행률, GPU 메모리, 데이터 수, dataloader 로그를 확인합니다. 첫 epoch의 모델 초기화와 캐시 준비가 오래 걸릴 수 있습니다.</td>
+      </tr>
+      <tr>
+        <td>CUDA illegal memory access</td>
+        <td>해당 작업을 중지하고 worker 프로세스를 종료한 뒤 새 작업으로 실행합니다. 오류가 난 CUDA context에서는 <code>empty_cache()</code>만으로 복구되지 않습니다. 바다 semantic 분석은 CPU 사용을 권장합니다.</td>
+      </tr>
+      <tr>
+        <td>Segmentation shape 오류</td>
+        <td>모델 task와 가중치가 호환되는지, 파일이 손상되지 않았는지 확인합니다. 현재 detector는 일부 segmentation postprocess 오류에서 bbox detect fallback을 시도하지만 mask는 없을 수 있습니다.</td>
+      </tr>
+      <tr>
+        <td>스트림 영상이 gray/spinner 상태</td>
+        <td>HLS manifest와 segment 요청이 브라우저에서 계속 성공하는지 확인합니다. 소스 reset 시 재연결을 기다리고, 장시간 복구되지 않으면 스트림과 탐지를 중지 후 다시 시작합니다.</td>
+      </tr>
+      <tr>
+        <td>모델이 새로고침 후에만 보임</td>
+        <td>등록된 <code>meta.json</code>과 가중치 경로를 확인하고 모델 새로고침을 수행합니다. 전체 리로드에서도 사라지면 등록 경로와 읽기 권한을 확인합니다.</td>
+      </tr>
+      <tr>
+        <td>리포트가 화면 결과와 다름</td>
+        <td>리포트 생성 전 원하는 저장 결과를 실제로 불러왔는지, 후처리 적용 후 저장/로드 상태가 일치하는지 확인합니다.</td>
+      </tr>
+      <tr>
+        <td>색상 후처리가 동작하지 않음</td>
+        <td>해당 작업의 <code>detect_jobs/&lt;job-id&gt;/video.mp4</code>가 남아 있어야 원본 bbox crop의 색을 다시 계산할 수 있습니다.</td>
+      </tr>
+    </table>
+
+    <h3>15.4 속도 개선 우선순위</h3>
+    <ol>
+      <li>탐지에 필요 없는 모델을 선택 해제합니다.</li>
+      <li>짧은 객체를 놓치지 않는 범위에서 frame stride를 늘립니다.</li>
+      <li>정밀 mask가 필요 없는 분석에서는 SAM을 끕니다.</li>
+      <li>작은 객체 성능이 허용되면 imgsz를 낮춥니다.</li>
+      <li>바다 영역 분석 간격을 늘리거나 사용하지 않습니다.</li>
+      <li>저장소 범위를 나누어 실행하고 불필요한 야간 영상은 dark skip으로 제외합니다.</li>
+    </ol>
+  </section>
+
+  <section class="page-break">
+    <h2>부록 A. CLI 빠른 참조</h2>
+
+    <h3>A.1 웹 서버</h3>
+    <pre>python -m brailer_monitor web --host 0.0.0.0 --port 8080</pre>
+
+    <h3>A.2 CVAT Import</h3>
+    <pre>python -m brailer_monitor import-cvat annotations.xml \
+  --video source.mp4 \
+  --dataset-root data/dataset</pre>
+
+    <h3>A.3 학습</h3>
+    <pre>python -m brailer_monitor train \
+  --dataset config/dataset.yaml \
+  --epochs 50 --batch 4 --imgsz 416 --device 0</pre>
+
+    <h3>A.4 단일 영상 탐지</h3>
+    <pre>python -m brailer_monitor detect-video input.mp4 \
+  --model models/library/MODEL_ID/weights.pt \
+  --out output/detect \
+  --frame-stride 5 \
+  --confidence 0.5 \
+  --roi-top 0 --roi-right 0.15 --roi-bottom 0 --roi-left 0.15</pre>
+
+    <h3>A.5 바다 영역만 분석: 단일 파일 탐지 명령</h3>
+    <pre>python -m brailer_monitor detect-video input.mp4 \
+  --sea-only \
+  --sea-ratio \
+  --sea-analysis-interval-sec 5 \
+  --sea-device cpu</pre>
+
+    <h3>A.6 바다 영역: 저장소</h3>
+    <pre>python -m brailer_monitor sea-area storage \
+  --start 2026-01-28T03 \
+  --end 2026-01-28T04 \
+  --media lake_win \
+  --year-folder 2026_decrypted \
+  --vessel JJR-102283 \
+  --camera-stream stream04 \
+  --minute-offsets 0,1,2,3,4 \
+  --second-suffixes 16 \
+  --sea-engine hybrid \
+  --device cpu \
+  --frame-stride 75</pre>
+    <p class="small">
+      <code>sea-area</code> 명령의 간격은 프레임 수(<code>--frame-stride</code>)입니다.
+      예를 들어 15fps에서 5초 간격은 75프레임입니다. 웹과 <code>detect-video</code>의
+      <code>--sea-analysis-interval-sec</code>는 초 단위입니다.
+    </p>
+
+    <h3>A.7 바다 영역: 실시간 스트림</h3>
+    <pre>python -m brailer_monitor sea-area stream \
+  --url http://127.0.0.1:8081/live_04.m3u8 \
+  --duration-sec 600 \
+  --frame-stride 75 \
+  --sea-engine hybrid \
+  --device cpu \
+  --jsonl-out output/sea-area.jsonl</pre>
+  </section>
+
+  <section class="page-break">
+    <h2>부록 B. 스크린샷 촬영 목록</h2>
+    <table>
+      <tr><th>ID</th><th>권장 파일명</th><th>촬영 내용</th><th>완료</th></tr>
+      <tr><td>S-01</td><td><code>S01_overview.png</code></td><td>전체 웹 화면과 주요 섹션</td><td class="check">☐</td></tr>
+      <tr><td>S-02</td><td><code>S02_cvat_annotation_export.png</code></td><td>CVAT brailer 주석 또는 Export 형식</td><td class="check">☐</td></tr>
+      <tr><td>S-03</td><td><code>S03_cvat_import.png</code></td><td>CVAT Import 입력과 완료 상태</td><td class="check">☐</td></tr>
+      <tr><td>S-04</td><td><code>S04_imported_frames.png</code></td><td>train/val Import 프레임과 label</td><td class="check">☐</td></tr>
+      <tr><td>S-05</td><td><code>S05_training_progress.png</code></td><td>학습 파라미터와 epoch/batch 진행률</td><td class="check">☐</td></tr>
+      <tr><td>S-06</td><td><code>S06_model_library_multiselect.png</code></td><td>모델 라이브러리 다중 선택</td><td class="check">☐</td></tr>
+      <tr><td>S-07</td><td><code>S07_detect_file.png</code></td><td>영상 파일 소스 탐지</td><td class="check">☐</td></tr>
+      <tr><td>S-08</td><td><code>S08_detect_lake_storage.png</code></td><td>Lake 저장소와 영상 확인</td><td class="check">☐</td></tr>
+      <tr><td>S-09</td><td><code>S09_stream_overlay.png</code></td><td>실시간 스트림과 오버레이</td><td class="check">☐</td></tr>
+      <tr><td>S-10</td><td><code>S10_detection_progress.png</code></td><td>탐지 옵션·진행률·바다 scale</td><td class="check">☐</td></tr>
+      <tr><td>S-11</td><td><code>S11_detection_timeline.png</code></td><td>대표/전체 프레임 타임라인</td><td class="check">☐</td></tr>
+      <tr><td>S-12</td><td><code>S12_preview_yolo_sam.png</code></td><td>YOLO/SAM mask 프리뷰</td><td class="check">☐</td></tr>
+      <tr><td>S-13</td><td><code>S13_postprocess_result.png</code></td><td>후처리 옵션과 제거 결과</td><td class="check">☐</td></tr>
+      <tr><td>S-14</td><td><code>S14_report_list.png</code></td><td>리포트 목록과 Delete</td><td class="check">☐</td></tr>
+      <tr><td>S-15</td><td><code>S15_html_report_timeline.png</code></td><td>HTML 요약과 인터랙티브 타임라인</td><td class="check">☐</td></tr>
+      <tr><td>S-16</td><td><code>S16_html_report_preview.png</code></td><td>HTML 프리뷰 팝업</td><td class="check">☐</td></tr>
+    </table>
+    <div class="tip">
+      운영 데이터의 선박명, IP 주소, 작업 시각이 외부 공유 문서에 포함되어도 되는지 확인한 뒤 촬영합니다.
+      필요한 경우 민감한 값은 이미지 편집 도구로 가린 버전을 사용합니다.
+    </div>
+  </section>
+
+  <section class="page-break">
+    <h2>부록 C. 운영 체크리스트</h2>
+
+    <h3>C.1 모델 학습 전</h3>
+    <ul class="check">
+      <li>☐ CVAT label 이름이 <code>brailer</code>로 통일되어 있다.</li>
+      <li>☐ Box 또는 polygon 유형이 원하는 YOLO task와 맞다.</li>
+      <li>☐ 빈 label, 중복 도형, 잘못된 프레임 좌표를 제거했다.</li>
+      <li>☐ Import된 train/val 프레임과 class 수를 확인했다.</li>
+      <li>☐ GPU 메모리에 맞는 batch와 imgsz를 정했다.</li>
+    </ul>
+
+    <h3>C.2 탐지 시작 전</h3>
+    <ul class="check">
+      <li>☐ 사용할 모델의 “탐지” 체크박스를 확인했다.</li>
+      <li>☐ 소스와 기간 또는 스트림 URL이 맞다.</li>
+      <li>☐ Lake 저장소는 “영상 확인”을 먼저 수행했다.</li>
+      <li>☐ Confidence, frame stride, imgsz, ROI를 기록했다.</li>
+      <li>☐ SAM, dark skip, sea analysis 사용 여부를 확인했다.</li>
+      <li>☐ 기존 현재 결과를 저장하거나 초기화했다.</li>
+    </ul>
+
+    <h3>C.3 탐지 완료 후</h3>
+    <ul class="check">
+      <li>☐ 처리 영상 수와 건너뛴 영상 수를 확인했다.</li>
+      <li>☐ 후처리 전 결과를 별도 이름으로 저장했다.</li>
+      <li>☐ 후처리 제거·보호·병합 통계를 기록했다.</li>
+      <li>☐ 정상/오탐 구간을 표본 검토했다.</li>
+      <li>☐ 현재 열려 있는 결과와 리포트 대상이 일치한다.</li>
+      <li>☐ HTML·CSV·JSON 리포트가 모두 생성되고 열리는지 확인했다.</li>
+    </ul>
+
+    <p class="muted" style="margin-top: 18mm; text-align: center;">
+      문서 끝 · Brailer Monitor 프로그램 설명 및 사용자·운영 매뉴얼 v1.0
+    </p>
+  </section>
+
+</body>
+</html>

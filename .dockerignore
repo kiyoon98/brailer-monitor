@@ -1,0 +1,36 @@
+.git
+.gitignore
+.pytest_cache
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+build
+dist
+
+# Runtime state is mounted from the host. The current data directory can be
+# hundreds of gigabytes and must never enter the Docker build context.
+data
+models
+output
+runs
+
+# Model weights are deployed independently from the application image.
+*.pt
+*.engine
+*.onnx
+*.torchscript
+
+# Local analysis and documentation artifacts are not required at runtime.
+docs
+tests
+sea.output
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.zip
+*.docx
+*.pdf
+

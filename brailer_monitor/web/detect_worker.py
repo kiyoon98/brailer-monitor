@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-specs-file")
     parser.add_argument("--output", required=True)
     parser.add_argument("--frame-stride", type=int, default=5)
-    parser.add_argument("--confidence", type=float, default=0.5)
+    parser.add_argument("--confidence", type=float, default=0.6)
     parser.add_argument("--imgsz", type=int, default=416)
     parser.add_argument("--device", default="0")
     parser.add_argument("--segmentation", choices=["auto", "yes", "no"], default="auto")

@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1.7
+
+# Jetson AGX Thor / JetPack 7.1 (L4T R38) compatible ARM64 CUDA image.
+# Override at build time only with another NVIDIA PyTorch image that explicitly
+# includes the Thor sm_110 CUDA architecture.
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.08-py3
+FROM ${BASE_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG APP_UID=1000
+ARG APP_GID=1000
+
+LABEL org.opencontainers.image.title="Brailer Monitor Edge"
+LABEL org.opencontainers.image.description="Jetson edge runtime for Brailer Monitor"
+LABEL org.opencontainers.image.source="brailer-monitor"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TZ=Asia/Seoul
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        tini \
+        tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install third-party dependencies before copying application code so that
+# normal source edits reuse the expensive dependency layer.
+COPY docker/requirements.edge.txt /tmp/requirements.edge.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.edge.txt \
+    && python3 -m pip install --no-cache-dir --no-deps \
+        ultralytics==8.4.64 \
+        supervision==0.28.0 \
+    && rm -f /tmp/requirements.edge.txt
+
+COPY pyproject.toml README.md ./
+COPY brailer_monitor ./brailer_monitor
+RUN python3 -m pip install --no-cache-dir --no-deps --no-build-isolation .
+
+COPY config ./config
+COPY assets ./assets
+COPY docker/entrypoint.sh /usr/local/bin/brailer-entrypoint
+
+RUN test "$(id -u ubuntu)" = "${APP_UID}" \
+    && test "$(id -g ubuntu)" = "${APP_GID}" \
+    && chmod 0755 /usr/local/bin/brailer-entrypoint \
+    && mkdir -p \
+        /app/data/dataset \
+        /app/data/pipeline \
+        /app/data/raw \
+        /app/data/web_jobs \
+        /app/models/library \
+        /app/output \
+        /app/runs \
+    && chown -R "${APP_UID}:${APP_GID}" \
+        /app/data \
+        /app/models \
+        /app/output \
+        /app/runs
+
+# All caches are placed under the persistent data mount. This keeps the image
+# root filesystem read-only at runtime and avoids repeated model downloads.
+ENV HOME=/app/data/home \
+    XDG_CACHE_HOME=/app/data/cache \
+    XDG_CONFIG_HOME=/app/data/config-cache \
+    YOLO_CONFIG_DIR=/app/data/config-cache/ultralytics \
+    HF_HOME=/app/data/cache/huggingface \
+    TORCH_HOME=/app/data/cache/torch \
+    MPLCONFIGDIR=/app/data/cache/matplotlib \
+    BRAILER_SAM_MODEL=/app/sam2_t.pt \
+    BRAILER_DEVICE=0 \
+    OMP_NUM_THREADS=4 \
+    OPENBLAS_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4 \
+    NUMEXPR_NUM_THREADS=4 \
+    TOKENIZERS_PARALLELISM=false \
+    MALLOC_ARENA_MAX=2 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+USER ${APP_UID}:${APP_GID}
+
+VOLUME ["/app/data", "/app/models", "/app/output", "/app/runs"]
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=3).read(1)"]
+
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/brailer-entrypoint"]
+CMD ["web", "--host", "0.0.0.0", "--port", "8080"]

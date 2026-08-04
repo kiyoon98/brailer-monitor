@@ -86,7 +86,7 @@ class LakeRangeRequest(BaseModel):
     end_day: int = Field(ge=1, le=31)
     end_hour: int = Field(ge=0, le=23)
     frame_stride: int = Field(default=5, ge=1)
-    confidence: float = Field(default=0.5, ge=0.05, le=1.0)
+    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
     use_sam: bool = True
     detect_roi: DetectionRoiMargins = Field(default_factory=DetectionRoiMargins)
@@ -102,7 +102,7 @@ class StreamDetectRequest(BaseModel):
     stream_url: str = Field(default="http://127.0.0.1:8081/live_04.m3u8", min_length=1)
     model_ids: list[str] | None = None
     frame_stride: int = Field(default=5, ge=1)
-    confidence: float = Field(default=0.5, ge=0.05, le=1.0)
+    confidence: float = Field(default=0.6, ge=0.05, le=1.0)
     imgsz: int = Field(default=416, ge=320, le=1280)
     use_sam: bool = True
     detect_roi: DetectionRoiMargins = Field(default_factory=DetectionRoiMargins)
@@ -383,7 +383,7 @@ async def pipeline_detect(
     files: list[UploadFile] = File(...),
     model_ids: list[str] | None = Form(None),
     frame_stride: int = Form(5),
-    confidence: float = Form(0.5),
+    confidence: float = Form(0.6),
     imgsz: int = Form(416),
     use_sam: bool = Form(True),
     calculate_sea_ratio: bool = Form(False),

@@ -1,0 +1,49 @@
+services:
+  brailer-monitor:
+    image: ${BRAILER_IMAGE:-brailer-monitor:edge}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.edge
+      args:
+        BASE_IMAGE: ${BRAILER_BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.08-py3}
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    container_name: brailer-monitor-edge
+    restart: unless-stopped
+    runtime: nvidia
+    gpus: all
+    network_mode: host
+    ipc: host
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      stack:
+        soft: 67108864
+        hard: 67108864
+    stop_grace_period: 45s
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+      BRAILER_DEVICE: ${BRAILER_DEVICE:-0}
+      BRAILER_SAM_MODEL: /app/sam2_t.pt
+      OMP_NUM_THREADS: ${BRAILER_CPU_THREADS:-4}
+      OPENBLAS_NUM_THREADS: ${BRAILER_CPU_THREADS:-4}
+      MKL_NUM_THREADS: ${BRAILER_CPU_THREADS:-4}
+      NUMEXPR_NUM_THREADS: ${BRAILER_CPU_THREADS:-4}
+      TOKENIZERS_PARALLELISM: "false"
+      MALLOC_ARENA_MAX: "2"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./config:/app/config
+      - ./output:/app/output
+      - ./runs:/app/runs
+      - ./sam2_t.pt:/app/sam2_t.pt:ro
+      - ./yolo11n.pt:/app/yolo11n.pt:ro
+      - ./yolo11n-seg.pt:/app/yolo11n-seg.pt:ro
